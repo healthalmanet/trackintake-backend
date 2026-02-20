@@ -1,0 +1,10 @@
+<html>
+<body>
+<script>
+const socket = new WebSocket("ws://127.0.0.1:8000/ws/reminders/?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoyMDY3NDA1NjI2LCJpYXQiOjE3NTIwNDU2MjYsImp0aSI6IjVjYzU3NjJlY2M3ZDQxMTNhYjRkMDg2OTQxNGFjOThhIiwidXNlcl9pZCI6Mywicm9sZSI6InVzZXIiLCJlbWFpbCI6ImltcmFuQGdtYWlsLmNvbSIsImZ1bGxfbmFtZSI6IkltcmFuIEtoYW4ifQ.6YNKpdL7dpf8j8BP2n-IM_OzjJjxw7DYbbDW5jB5Fvo");
+socket.onopen = () => console.log("✅ Connected");
+socket.onmessage = (e) => console.log("📩 Message:", e.data);
+socket.onclose = () => console.log("❌ Disconnected");
+</script>
+</body>
+</html>

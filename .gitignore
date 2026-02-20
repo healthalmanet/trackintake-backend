@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pdb
+
+# Virtual environment
+venv/
+env/
+ENV/
+.venv/
+.ENV/
+
+# Django migrations
+*/migrations/
+!*/migrations/__init__.py
+
+# SQLite database
+*.sqlite3
+*.db
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and local media
+*.log
+staticfiles/
+static_root/
+tmp/
+temp/
+
+# Environment files
+.env
+.env.*
+
+# Coverage reports
+htmlcov/
+.coverage
+.tox/
+nosetests.xml
+coverage.xml
+
+# Pytest
+.pytest_cache/
+.cache/
+
+# Docker
+*.pid
+docker-compose.override.yml
+
+# MyPy
+.mypy_cache/
+
+# VS Code debug
+.vscode/
