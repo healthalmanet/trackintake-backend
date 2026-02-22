@@ -193,32 +193,9 @@ CHANNEL_LAYERS = {
 # ==============================================================================
 # CORS & EMAIL SETTINGS
 # ==============================================================================
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "https://trackeats-1.onrender.com",
-    "https://trackeats.onrender.com",
-    "https://track-eats.onrender.com",
-    "https://trackeats-qfl8.onrender.com",
-    "https://trackintake-backend.onrender.com",
-    "https://trackintake.onrender.com",
-    "https://trackintake.co",
-    "https://www.trackintake.co",
-]
-
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:5173",
-    "https://trackeats-1.onrender.com",
-    "https://trackeats.onrender.com",
-    "https://track-eats.onrender.com",
-    "https://trackeats-qfl8.onrender.com",
-    "https://trackintake-backend.onrender.com",
-    "https://trackintake.onrender.com",
-    "https://trackintake.co",
-    "https://www.trackintake.co",
-]
-# CORS_ALLOWED_ORIGINS = ["http://localhost:5173","https://trackeats-1.onrender.com","https://trackeats.onrender.com", "https://track-eats.onrender.com","https://trackeats-qfl8.onrender.com"]
+CORS_ALLOWED_ORIGINS = ["http://localhost:5173","https://trackeats-1.onrender.com","https://trackeats.onrender.com", "https://track-eats.onrender.com","https://trackeats-qfl8.onrender.com","https://trackintake.co","https://www.trackintake.co",]
 CORS_ALLOW_CREDENTIALS = True
-# CSRF_TRUSTED_ORIGINS = ["https://track-eats.onrender.com","https://trackeats.onrender.com", "https://trackeats-1.onrender.com", "http://localhost:5173","https://trackeats-qfl8.onrender.com"]
+CSRF_TRUSTED_ORIGINS = ["https://track-eats.onrender.com","https://trackeats.onrender.com", "https://trackeats-1.onrender.com", "http://localhost:5173","https://trackeats-qfl8.onrender.com""https://trackintake.co","https://www.trackintake.co"]
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST, EMAIL_PORT, EMAIL_USE_TLS = 'smtp.gmail.com', 587, True
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
