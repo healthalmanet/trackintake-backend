@@ -196,30 +196,15 @@ CHANNEL_LAYERS = {
 CORS_ALLOWED_ORIGINS = ["http://localhost:5173","https://trackeats-1.onrender.com","https://trackeats.onrender.com", "https://track-eats.onrender.com","https://trackeats-qfl8.onrender.com","https://trackintake-backend.onrender.com","https://trackintake.onrender.com","https://trackintake.co.in"]
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = ["https://track-eats.onrender.com","https://trackeats.onrender.com", "https://trackeats-1.onrender.com", "http://localhost:5173","https://trackeats-qfl8.onrender.com","https://trackintake-backend.onrender.com","https://trackintake.onrender.com","https://trackintake.co.in"]
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST, EMAIL_PORT, EMAIL_USE_TLS = 'smtp.gmail.com', 587, True
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
  # Note: Consider App Passwords for Gmail
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
-# ======================================================================
-# EMAIL CONFIGURATION (SAFE + TOGGLEABLE)
-# ======================================================================
 
-# EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "true").lower() == "true"
-
-# if EMAIL_ENABLED:
-#     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-#     EMAIL_HOST = 'smtp.gmail.com'
-#     EMAIL_PORT = 587
-#     EMAIL_USE_TLS = True
-#     EMAIL_HOST_USER = config("EMAIL_HOST_USER", default=None)
-#     EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default=None)
-#     DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
-# else:
-#     # 🔒 Email completely disabled (NO SMTP CALLS)
-#     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
 
 # ADD THIS BLOCK:
