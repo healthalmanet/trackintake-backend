@@ -60,7 +60,7 @@ class SendOTPView(views.APIView):
         send_mail(
             subject="Your OTP Code",
             message=f"Hi,\n\nYour OTP Code is {otp}. It is valid for 5 minutes.",
-            from_email="your-email@example.com",  # CHANGE THIS
+            from_email=settings.DEFAULT_FROM_EMAIL,  # CHANGE THIS
             recipient_list=[email],
             fail_silently=False
         )
