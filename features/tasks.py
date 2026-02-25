@@ -7,7 +7,7 @@ from django.core.mail import send_mail
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from .models import CustomReminder
-
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 print(logger)
@@ -50,7 +50,7 @@ def send_and_reschedule_reminders():
             send_mail(
                 subject=f"Your Reminder: {reminder.title}",
                 message=message,
-                from_email="health.almanet@gmail.com",  # Uses EMAIL_HOST_USER from settings.py
+                from_email=settings.DEFAULT_FROM_EMAIL,  # Uses EMAIL_HOST_USER from settings.py
                 recipient_list=[user.email],
                 fail_silently=False
             )
@@ -117,7 +117,7 @@ def send_message_notification(sender, receiver, text):
         send_mail(
             subject="New Message Notification",
             message=message,
-            from_email="health.almanet@gmail.com",
+            from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[receiver.email],
             fail_silently=False,
         )

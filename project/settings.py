@@ -196,15 +196,19 @@ CHANNEL_LAYERS = {
 CORS_ALLOWED_ORIGINS = ["http://localhost:5173","https://trackeats-1.onrender.com","https://trackeats.onrender.com", "https://track-eats.onrender.com","https://trackeats-qfl8.onrender.com","https://trackintake-backend.onrender.com","https://trackintake.onrender.com","https://trackintake.co.in"]
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = ["https://track-eats.onrender.com","https://trackeats.onrender.com", "https://trackeats-1.onrender.com", "http://localhost:5173","https://trackeats-qfl8.onrender.com","https://trackintake-backend.onrender.com","https://trackintake.onrender.com","https://trackintake.co.in"]
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST, EMAIL_PORT, EMAIL_USE_TLS = 'smtp.gmail.com', 587, True
-EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
- # Note: Consider App Passwords for Gmail
-DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+# ==============================
+# RESEND SMTP CONFIG
+# ==============================
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 
+EMAIL_HOST = "smtp.resend.com"
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_USE_SSL = False
 
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+EMAIL_HOST_USER = "resend"
+EMAIL_HOST_PASSWORD = os.getenv("RESEND_API_KEY")
+DEFAULT_FROM_EMAIL = "TrackEats <no-reply@trackintake.co.in>"
 
 
 # ADD THIS BLOCK:
