@@ -199,7 +199,7 @@ CSRF_TRUSTED_ORIGINS = ["https://track-eats.onrender.com","https://trackeats.onr
 # ==============================
 # RESEND SMTP CONFIG
 # ==============================
-EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
 EMAIL_HOST = "smtp.resend.com"
 EMAIL_PORT = 587

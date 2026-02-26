@@ -32,16 +32,43 @@ from dj_rest_auth.registration.views import SocialLoginView
 
 from allauth.socialaccount.providers.facebook.views import FacebookOAuth2Adapter
 # Create your views here.
-
+from utils.resend_email import send_resend_email
 
 class MyTokenObtainPairView(TokenObtainPairView):
     serializer_class = MyTokenObtainPairSerializer
 
 
 
+# class SendOTPView(views.APIView):
+#     """
+#     Step 1: Client sends an email. An OTP is generated and sent to that email.
+#     """
+#     permission_classes = [permissions.AllowAny]
+
+#     def post(self, request):
+#         serializer = EmailSerializer(data=request.data)
+#         serializer.is_valid(raise_exception=True)
+#         email = serializer.validated_data['email']
+
+#         # If an inactive user exists, we can reuse it, otherwise we don't care.
+#         # The serializer already prevents active users from getting a new OTP.
+        
+#         otp = f"{random.randint(100000, 999999)}"
+#         # Cache the OTP for 5 minutes
+#         cache.set(f"otp_{email}", otp, timeout=300)
+
+#         send_mail(
+#             subject="Your OTP Code",
+#             message=f"Hi,\n\nYour OTP Code is {otp}. It is valid for 5 minutes.",
+#             from_email=settings.DEFAULT_FROM_EMAIL,  # CHANGE THIS
+#             recipient_list=[email],
+#             fail_silently=False
+#         )
+
+#         return Response({"message": "OTP sent to your email."}, status=status.HTTP_200_OK)
 class SendOTPView(views.APIView):
     """
-    Step 1: Client sends an email. An OTP is generated and sent to that email.
+    Step 1: Send OTP using Resend (non-blocking, safe for Render)
     """
     permission_classes = [permissions.AllowAny]
 
@@ -50,23 +77,27 @@ class SendOTPView(views.APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email']
 
-        # If an inactive user exists, we can reuse it, otherwise we don't care.
-        # The serializer already prevents active users from getting a new OTP.
-        
         otp = f"{random.randint(100000, 999999)}"
-        # Cache the OTP for 5 minutes
+
+        # Store OTP for 5 min
         cache.set(f"otp_{email}", otp, timeout=300)
 
-        send_mail(
-            subject="Your OTP Code",
-            message=f"Hi,\n\nYour OTP Code is {otp}. It is valid for 5 minutes.",
-            from_email=settings.DEFAULT_FROM_EMAIL,  # CHANGE THIS
-            recipient_list=[email],
-            fail_silently=False
+        # RESEND SEND
+        from utils.resend_email import send_resend_email
+
+        html = f"""
+            <h2>Your TrackEats OTP</h2>
+            <p>Your OTP is: <strong>{otp}</strong></p>
+            <p>It is valid for 5 minutes.</p>
+        """
+
+        send_resend_email(
+            to=email,
+            subject="Your TrackEats OTP Code",
+            html=html,
         )
 
-        return Response({"message": "OTP sent to your email."}, status=status.HTTP_200_OK)
-
+        return Response({"message": "OTP sent via Resend."}, status=status.HTTP_200_OK)
 
 class VerifyOTPView(views.APIView):
     """
