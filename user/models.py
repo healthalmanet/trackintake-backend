@@ -32,7 +32,7 @@ class UserManager(BaseUserManager):
         
         # Add the 'role' when creating the model instance
         user = self.model(
-            email=self.normalize_email(email),
+            email=self.normalize_email(email).lower(),
             full_name=full_name,
             role=role  # <-- ADD THIS LINE
         )

@@ -54,6 +54,7 @@ class EmailSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         # Check if a user with this email is already registered and active
+        value=value.lower()
         if User.objects.filter(email=value, is_active=True).exists():
             raise serializers.ValidationError("A user with this email is already registered.")
         return value
@@ -63,7 +64,8 @@ class VerifyOTPSerializer(serializers.Serializer):
     """Serializer for the second step: verifying the OTP."""
     email = serializers.EmailField()
     otp = serializers.CharField(max_length=6)
-
+    def validate_email(self, value):
+        return value.lower()
 
 # class RegisterSerializer(serializers.ModelSerializer):
 #     """
@@ -151,6 +153,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         """
         Validate the verification token.
         """
+        data['email'] = data['email'].lower() 
         email = data.get('email')
         token = data.get('verification_token')
 

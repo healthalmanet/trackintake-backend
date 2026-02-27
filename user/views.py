@@ -209,7 +209,7 @@ class ForgotPasswordView(generics.GenericAPIView):
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data['email']
+        email = serializer.validated_data['email'].lower()
         try:
             user = User.objects.get(email=email)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
