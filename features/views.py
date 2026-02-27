@@ -52,10 +52,7 @@ class WeightLogViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         # serializer.save(user=self.request.user) Subscription added
-        subscription = get_active_subscription(self.request.user)
-
-        if not subscription or subscription.plan.price == 0:
-            raise PermissionDenied("Upgrade to a paid plan.")
+        require_plan_feature(self.request.user, "weight_tracker_allowed")
 
         serializer.save(user=self.request.user)
 
@@ -151,10 +148,11 @@ class CustomReminderViewSet(viewsets.ModelViewSet):
     ordering = ['reminder_time']
 
     def get_queryset(self):
-        require_plan_feature(self.request.user, "custom_reminder_allowed")
+    # ✅ No gate here — always allow reading existing data
         return self.queryset.filter(user=self.request.user)
 
     def perform_create(self, serializer):
+        # ✅ Gate only on creating new reminders
         require_plan_feature(self.request.user, "custom_reminder_allowed")
         serializer.save(user=self.request.user)
 
@@ -364,31 +362,18 @@ class BlogDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 
+# ✅ Fix — check auth FIRST
 @api_view(['POST'])
-@permission_classes([AllowAny]) # Security is handled by checking a secret header
+@permission_classes([AllowAny])
 def trigger_reminder_check_securely(request):
-    """
-    A secure endpoint to be called by a trusted scheduler (like GitHub Actions).
-    It verifies a secret key from the Authorization header before running the task.
-    """
- 
-    send_and_reschedule_reminders()
-    return Response({"message": "✅ Reminder check process initiated."})
-
-    send_due_reminders()
-    return Response({"message": "✅ Reminder check completed"})
-    # The scheduler must send the password in a header like:
-    # "Authorization: Bearer your_secret_password_here"
     auth_header = request.headers.get('Authorization')
     expected_secret = f"Bearer {os.environ.get('CRON_SECRET')}"
 
-    # If the password is wrong or missing, block access.
-    if auth_header != expected_secret:
+    if not auth_header or auth_header != expected_secret:
         return JsonResponse({"detail": "Unauthorized"}, status=401)
-    
-    # If the password is correct, run the task.
+
     try:
-        num_sent = send_due_reminders()
-        return JsonResponse({"status": "success", "reminders_sent": num_sent})
+        send_and_reschedule_reminders()
+        return Response({"message": "✅ Reminder check process initiated."})
     except Exception:
         return JsonResponse({"status": "error"}, status=500)
