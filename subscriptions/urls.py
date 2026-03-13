@@ -5,7 +5,11 @@ from .views import (
     PlanListView,
     MySubscriptionView,
     NutritionistRegistrationOrderView,
+    UserRegistrationOrderView,
 )
+from .views import VerifyPaymentView
+
+
 
 urlpatterns = [
     path("plans/", PlanListView.as_view()),
@@ -13,4 +17,6 @@ urlpatterns = [
     path("create-order/", CreateOrderView.as_view()),
     path("razorpay/webhook/", RazorpayWebhook.as_view()),
     path("nutritionist-registration-order/", NutritionistRegistrationOrderView.as_view()),
+    path("user-registration-order/", UserRegistrationOrderView.as_view()),
+    path("verify-payment/", VerifyPaymentView.as_view()),
 ]
