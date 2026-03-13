@@ -3,12 +3,15 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.conf import settings
 import razorpay
-from rest_framework import status 
+from rest_framework import status
 
-from .models import Plan, Payment
+from .models import Plan, Payment, UserSubscription
 from .serializers import PlanSerializer
-from .models import UserSubscription
-
+import hmac
+import hashlib
+# ✅ Correct — use Django's built-in get_user_model(), works regardless of app name
+from django.contrib.auth import get_user_model
+User = get_user_model()
 
 class MySubscriptionView(APIView):
     permission_classes = [IsAuthenticated]
@@ -44,7 +47,7 @@ class PlanListView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        plan_type = request.query_params.get("type")  # 'nutritionist' | 'patient' | None
+        plan_type = request.query_params.get("type")
         qs = Plan.objects.filter(is_active=True).order_by("price")
         if plan_type:
             qs = qs.filter(plan_type=plan_type)
@@ -53,6 +56,7 @@ class PlanListView(APIView):
 
 
 class CreateOrderView(APIView):
+    """Authenticated users upgrading/purchasing a plan."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -92,25 +96,52 @@ class CreateOrderView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
-class NutritionistRegistrationOrderView(APIView):
-    """
-    Public endpoint — creates a Razorpay order for a nutritionist
-    BEFORE they have an account. No auth required.
-    """
+class UserRegistrationOrderView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
         plan_id = request.data.get("plan_id")
         email = request.data.get("email", "").strip().lower()
-        full_name = request.data.get("full_name", "")
 
         if not plan_id or not email:
-            return Response({"error": "plan_id and email are required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "plan_id and email are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ✅ Block if user already exists
+        if User.objects.filter(email=email, is_active=True).exists():
+            return Response(
+                {"error": "An account with this email already exists."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
-            plan = Plan.objects.get(id=plan_id, is_active=True, plan_type="nutritionist")
+            plan = Plan.objects.get(id=plan_id, is_active=True, plan_type="patient")
         except Plan.DoesNotExist:
-            return Response({"error": "Invalid or inactive plan"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Invalid or inactive plan"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if plan.price == 0:
+            return Response(
+                {"error": "This is a free plan. No payment required — proceed directly to registration."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ✅ Don't create a duplicate if they already have a successful payment
+        already_paid = Payment.objects.filter(
+            pending_email=email,
+            plan=plan,
+            status="success",
+            user__isnull=True,
+        ).exists()
+        if already_paid:
+            return Response(
+                {"error": "Payment already completed for this email. Proceed to registration."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         amount_in_paise = int(plan.price * 100)
         client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
@@ -119,11 +150,11 @@ class NutritionistRegistrationOrderView(APIView):
             "amount": amount_in_paise,
             "currency": "INR",
             "payment_capture": 1,
-            "notes": {"email": email, "full_name": full_name, "type": "nutritionist_registration"},
+            "notes": {"email": email, "type": "user_registration"},
         })
 
         Payment.objects.create(
-            user=None,               # user doesn't exist yet
+            user=None,
             plan=plan,
             amount=plan.price,
             razorpay_order_id=order["id"],
@@ -138,3 +169,108 @@ class NutritionistRegistrationOrderView(APIView):
             "key": settings.RAZORPAY_KEY_ID,
             "plan": {"id": plan.id, "name": plan.name, "price": plan.price}
         }, status=status.HTTP_201_CREATED)
+
+class NutritionistRegistrationOrderView(APIView):
+    """
+    Public endpoint — creates a Razorpay order for a nutritionist
+    BEFORE they have an account. No auth required.
+
+    Same free plan guard as UserRegistrationOrderView.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        plan_id = request.data.get("plan_id")
+        email = request.data.get("email", "").strip().lower()
+        full_name = request.data.get("full_name", "")
+
+        if not plan_id or not email:
+            return Response(
+                {"error": "plan_id and email are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            plan = Plan.objects.get(id=plan_id, is_active=True, plan_type="nutritionist")
+        except Plan.DoesNotExist:
+            return Response(
+                {"error": "Invalid or inactive plan"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Free plan — no payment needed
+        if plan.price == 0:
+            return Response(
+                {"error": "This is a free plan. No payment required — proceed directly to registration."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        amount_in_paise = int(plan.price * 100)
+        client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+
+        order = client.order.create({
+            "amount": amount_in_paise,
+            "currency": "INR",
+            "payment_capture": 1,
+            "notes": {
+                "email": email,
+                "full_name": full_name,
+                "type": "nutritionist_registration",
+            },
+        })
+
+        Payment.objects.create(
+            user=None,
+            plan=plan,
+            amount=plan.price,
+            razorpay_order_id=order["id"],
+            status="pending",
+            pending_email=email,
+        )
+
+        return Response({
+            "order_id": order["id"],
+            "amount": amount_in_paise,
+            "currency": "INR",
+            "key": settings.RAZORPAY_KEY_ID,
+            "plan": {"id": plan.id, "name": plan.name, "price": plan.price}
+        }, status=status.HTTP_201_CREATED)
+
+class VerifyPaymentView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        order_id = request.data.get("razorpay_order_id")
+        payment_id = request.data.get("razorpay_payment_id")
+        signature = request.data.get("razorpay_signature")
+
+        if not all([order_id, payment_id, signature]):
+            return Response({"error": "Missing payment fields"}, status=400)
+
+        # Verify signature
+        expected = hmac.new(
+            settings.RAZORPAY_KEY_SECRET.encode(),
+            f"{order_id}|{payment_id}".encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        if not hmac.compare_digest(expected, signature):
+            return Response({"error": "Invalid signature"}, status=400)
+
+        try:
+            payment = Payment.objects.get(
+                razorpay_order_id=order_id,
+                status="pending",
+            )
+            payment.razorpay_payment_id = payment_id
+            payment.status = "success"
+            payment.save(update_fields=["razorpay_payment_id", "status"])
+
+            if payment.user:
+                from .services import activate_plan_for_user
+                activate_plan_for_user(user=payment.user, plan=payment.plan)
+
+        except Payment.DoesNotExist:
+            pass
+
+        return Response({"status": "ok"})
