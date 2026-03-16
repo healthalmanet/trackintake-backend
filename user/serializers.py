@@ -128,7 +128,10 @@ class RegisterSerializer(serializers.ModelSerializer):
         cached_token = cache.get(f"verification_token_{email}")
         if not cached_token:
             raise serializers.ValidationError({
-                "token": "Verification token has expired or is invalid. Please start over."
+                "token": (
+                    "Verification token expired. Please re-verify your email. "
+                    "Your payment has been saved and will be linked automatically when you complete registration."
+                )
             })
         if cached_token != token:
             raise serializers.ValidationError({
@@ -163,12 +166,18 @@ class RegisterSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        validated_data.pop('verification_token')
-        email = validated_data.get('email')
+        validated_data.pop('verification_token', None)
+        email = validated_data['email']  # already lowercased in validate()
+        full_name = validated_data['full_name']
+        password = validated_data['password']
         role = validated_data.get('role', 'user')
 
-        # Create the user account
-        user = User.objects.create_user(**validated_data)
+        user = User.objects.create_user(
+            email=email,
+            full_name=full_name,
+            password=password,
+            role=role,
+        )
         cache.delete(f"verification_token_{email}")
 
         from subscriptions.models import Payment, Plan

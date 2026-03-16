@@ -25,5 +25,5 @@ class CustomCloudinaryStorage(MediaCloudinaryStorage):
         options = super()._get_url_options(name)
         options['resource_type'] = self._get_resource_type(name)
         return options
-    
+
 # testing

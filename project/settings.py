@@ -15,7 +15,7 @@ import ssl
 # Load environment variables from .env file
 load_dotenv()
 
-
+SUGGESTION_PERIOD_DAYS = 1 
 
 # ==============================================================================
 # CORE PATHS & SECURITY
