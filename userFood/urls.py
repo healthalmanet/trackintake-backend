@@ -2,7 +2,7 @@
 from django.urls import path, include
 from userFood.views import DailyUserMealSummaryView, UserMealViewSet, targetNutrients, targetNutrientsUpdate
 from rest_framework.routers import DefaultRouter
-
+from .views import FoodSuggestionView
 router = DefaultRouter()
 
 
@@ -21,6 +21,6 @@ urlpatterns = [
 
 
     path('', include(router.urls)), 
-
+    path("suggest-foods/", FoodSuggestionView.as_view(), name="suggest-foods"),
 
 ]

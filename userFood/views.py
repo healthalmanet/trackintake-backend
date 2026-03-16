@@ -29,7 +29,8 @@ from .serializers import UserMealSerializer
 
 from .models import UserMeal, FoodItem, Allergen, FoodType, MealType
 from userProfile.models import UserProfile
-
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
 
 # FUZZY_MATCH_THRESHOLD = 90
@@ -626,3 +627,202 @@ class targetNutrientsUpdate(APIView):
             "sugar": totals["total_sugar"],
             "fiber": totals["total_fiber"],
         })
+    
+
+
+
+# ================================================================
+# ADD THIS to your userFood/views.py
+# Step 1: Add these imports to the TOP of userFood/views.py:
+#
+#   from rest_framework.views import APIView
+#   from rest_framework.permissions import IsAuthenticated
+#   from rest_framework.response import Response
+#   from channels.layers import get_channel_layer
+#   from asgiref.sync import async_to_sync
+#
+# Step 2: Paste the class below at the BOTTOM of userFood/views.py
+# ================================================================
+
+
+class FoodSuggestionView(APIView):
+    """
+    GET /api/suggest-foods/
+
+    Returns personalised food suggestions based on:
+      • Remaining daily macros  (calories, protein, carbs, fats)
+      • User's diet type, country, allergies, medical conditions
+      • Active nutritionist diet plan (if any)
+      • Gemini AI fallback when DB pool < 5 candidates
+
+    Also triggers:
+      • WebSocket push  — when protein remaining > 30 % of target
+                          OR calories consumed < 60 %
+      • Email queue flag — between 7 pm – 8 pm only (daily summary)
+
+    Query params:
+      ?meal_type=Lunch    (optional)
+      ?limit=5            (optional, default 5, max 10)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from userFood.suggestions import build_suggestions
+        from utils.resend_email import send_resend_email
+        from django.utils import timezone
+
+        user      = request.user
+        meal_type = request.query_params.get("meal_type") or None
+        limit     = min(int(request.query_params.get("limit", 5)), 10)
+
+        # ── Period param (?period=daily or ?period=weekly) ───────
+        # Overrides the global SUGGESTION_PERIOD_DAYS setting.
+        period_param = request.query_params.get("period") or None
+        if period_param not in ("daily", "weekly", None):
+            period_param = None  # ignore invalid values
+
+        result = build_suggestions(user=user, meal_type=meal_type, limit=limit, period=period_param)
+
+        if "error" in result:
+            return Response({"detail": result["error"]}, status=400)
+
+        # ── WebSocket push ───────────────────────────────────────
+        delivery  = result.get("delivery", {})
+        ws_pushed = False
+        email_q   = False
+
+        if delivery.get("ws_should_push") and result.get("suggestions"):
+            try:
+                channel_layer = get_channel_layer()
+                top       = result["suggestions"][0]
+                remaining = result["remaining_nutrients"]
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user.id}",
+                    {
+                        "type":           "send_suggestion",
+                        "message":        f"💡 You still need {remaining['protein_g']:.0f}g protein today",
+                        "top_suggestion": top["food_name"],
+                        "reason":         top["reasons"][0] if top["reasons"] else "",
+                        "calories_left":  remaining["calories"],
+                    },
+                )
+                ws_pushed = True
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(f"WS suggestion push failed: {exc}")
+
+        # ── Daily summary email (7 pm – 8 pm) ───────────────────
+        if delivery.get("email_should_queue"):
+            try:
+                _send_daily_suggestion_email(user, result, send_resend_email)
+                email_q = True
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(f"Suggestion email failed: {exc}")
+
+        return Response({
+            "remaining_nutrients": result["remaining_nutrients"],
+            "consumed":            result["consumed"],
+            "targets":             result["targets"],
+            "goal":                result["goal"],
+            "suggestions":         result["suggestions"],
+            "plan_reminder":       result["plan_reminder"],
+            "health_context":      result.get("health_context", {}),
+            "period":              result.get("period", "daily"),   # ← new
+            "delivery": {
+                "ws_pushed":    ws_pushed,
+                "email_queued": email_q,
+            },
+        })
+
+
+def _send_daily_suggestion_email(user, result, send_resend_email):
+    """Sends the 7 pm daily nutrition-summary email."""
+    from django.utils import timezone
+
+    today       = timezone.now().date()
+    remaining   = result["remaining_nutrients"]
+    suggestions = result["suggestions"][:3]
+    goal        = result["goal"]
+
+    rows_html = "".join([
+        f"""
+        <tr>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#c9d1d9">{s['food_name']}</td>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#c9d1d9;text-align:center">{s['calories']:.0f} kcal</td>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#00ff88;text-align:center">{s['protein']:.1f}g</td>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#c9d1d9">{', '.join(s['reasons'][:2])}</td>
+        </tr>"""
+        for s in suggestions
+    ])
+
+    plan_html = ""
+    pr = result.get("plan_reminder")
+    if pr:
+        plan_html = f"""
+        <div style="background:#0d1117;border-left:3px solid #00d4ff;
+                    border-radius:6px;padding:14px;margin:20px 0">
+          <p style="color:#00d4ff;margin:0;font-size:13px;font-weight:600">
+            📋 Diet Plan Reminder
+          </p>
+          <p style="color:#c9d1d9;margin:6px 0 0;font-size:13px">{pr['message']}</p>
+        </div>"""
+
+    html = f"""
+    <html><body style="background:#080c10;font-family:sans-serif;padding:30px">
+    <div style="max-width:600px;margin:auto;background:#0d1117;
+                border:1px solid #1e2d3d;border-radius:12px;padding:30px">
+
+      <h2 style="color:#00d4ff;margin:0 0 4px">🥗 Daily Nutrition Summary</h2>
+      <p style="color:#6e7d8f;font-size:12px;margin:0 0 24px">{today} · Goal: {goal}</p>
+
+      <table style="width:100%;border-collapse:collapse;margin-bottom:16px">
+        <tr style="background:#111820">
+          <th style="padding:8px;border:1px solid #1e2d3d;color:#6e7d8f;text-align:left">Nutrient</th>
+          <th style="padding:8px;border:1px solid #1e2d3d;color:#6e7d8f">Remaining</th>
+        </tr>
+        <tr>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#c9d1d9">Calories</td>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#00d4ff;text-align:center">
+            {remaining['calories']:.0f} kcal</td>
+        </tr>
+        <tr>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#c9d1d9">Protein</td>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#00ff88;text-align:center">
+            {remaining['protein_g']:.1f}g</td>
+        </tr>
+        <tr>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#c9d1d9">Carbs</td>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#c9d1d9;text-align:center">
+            {remaining['carbs_g']:.1f}g</td>
+        </tr>
+        <tr>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#c9d1d9">Fats</td>
+          <td style="padding:10px;border:1px solid #1e2d3d;color:#c9d1d9;text-align:center">
+            {remaining['fats_g']:.1f}g</td>
+        </tr>
+      </table>
+
+      {plan_html}
+
+      <h3 style="color:#fff;margin:20px 0 12px">💡 Suggested Foods for Tonight</h3>
+      <table style="width:100%;border-collapse:collapse">
+        <tr style="background:#111820">
+          <th style="padding:8px;border:1px solid #1e2d3d;color:#6e7d8f;text-align:left">Food</th>
+          <th style="padding:8px;border:1px solid #1e2d3d;color:#6e7d8f">Cal</th>
+          <th style="padding:8px;border:1px solid #1e2d3d;color:#6e7d8f">Protein</th>
+          <th style="padding:8px;border:1px solid #1e2d3d;color:#6e7d8f;text-align:left">Why</th>
+        </tr>
+        {rows_html}
+      </table>
+
+      <p style="color:#6e7d8f;font-size:11px;margin-top:28px;text-align:center">
+        TrackEats · Stay consistent, hit your goals 💪
+      </p>
+    </div></body></html>"""
+
+    send_resend_email(
+        to=user.email,
+        subject=f"🥗 Your Daily Nutrition Summary – {today}",
+        html=html,
+    )
