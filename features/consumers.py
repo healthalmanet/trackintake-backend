@@ -32,18 +32,27 @@ class ReminderConsumer(AsyncWebsocketConsumer):
             logger.info(f"👋 Disconnected from group {self.group_name}")
             print(f"👋 Disconnected from group {self.group_name}")
 
-
     async def send_reminder(self, event):
-         await self.send(text_data=json.dumps({
-             "type": "reminder",
-             "message": event["message"],
-             "reminder_id": event["reminder_id"],
-             "title": event["title"]
-         }))
+        await self.send(text_data=json.dumps({
+            "type":        "reminder",
+            "message":     event["message"],
+            "reminder_id": event["reminder_id"],
+            "title":       event["title"],
+        }))
 
-
-
-
+    async def send_suggestion(self, event):
+        """
+        Handles food suggestion WebSocket push.
+        Fired by FoodSuggestionView when protein gap > 30% of target
+        or when less than 60% of daily calories have been consumed.
+        """
+        await self.send(text_data=json.dumps({
+            "type":           "food_suggestion",
+            "message":        event.get("message", ""),
+            "top_suggestion": event.get("top_suggestion", ""),
+            "reason":         event.get("reason", ""),
+            "calories_left":  event.get("calories_left", 0),
+        }))
 
 
 class MessageConsumer(AsyncWebsocketConsumer):
@@ -63,21 +72,26 @@ class MessageConsumer(AsyncWebsocketConsumer):
             logger.info(f"👋 Disconnected: {self.group_name}")
 
     async def receive(self, text_data):
-        # Optional if you want to handle frontend incoming messages via socket
+        pass
+
+    async def send_suggestion(self, event):
+        # Both consumers share the same group (user_X).
+        # ReminderConsumer handles the push to frontend.
+        # This no-op stops MessageConsumer from crashing on the same broadcast.
         pass
 
     async def send_message(self, event):
         await self.send(text_data=json.dumps({
-            "type": "message",
+            "type":    "message",
             "message": event["message"],
             "sender": {
-                "id": event["sender_id"],
-                "name": event["sender_name"],
-                "email": event["sender_email"]
+                "id":    event["sender_id"],
+                "name":  event["sender_name"],
+                "email": event["sender_email"],
             },
             "receiver": {
-                "id": event["receiver_id"],
-                "name": event["receiver_name"],
-                "email": event["receiver_email"]
-            }
+                "id":    event["receiver_id"],
+                "name":  event["receiver_name"],
+                "email": event["receiver_email"],
+            },
         }))

@@ -137,10 +137,14 @@ class UserRegistrationOrderView(APIView):
             status="success",
             user__isnull=True,
         ).exists()
+        # AFTER (returns 200 with a flag — frontend can detect and skip plan screen)
         if already_paid:
             return Response(
-                {"error": "Payment already completed for this email. Proceed to registration."},
-                status=status.HTTP_400_BAD_REQUEST
+                {
+                    "already_paid": True,
+                    "message": "Payment already completed for this email. Proceed to registration.",
+                },
+                status=status.HTTP_200_OK
             )
 
         amount_in_paise = int(plan.price * 100)

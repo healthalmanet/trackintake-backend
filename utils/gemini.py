@@ -1,31 +1,30 @@
 import json
 import traceback
-
-import google.generativeai as genai
-from django.db import transaction
-
-from google import genai
-from django.db import transaction
 import time
 import logging
-import dotenv
 import os
-dotenv.load_dotenv()
-logger = logging.getLogger(__name__)
+from pathlib import Path
 
+import dotenv
+from django.db import transaction
+from google import genai
 
-# Import your Django models from the same app
-from userFood.models import FoodItem, FoodType, MealType, Allergen, LEVEL_CHOICES
-
-# --- Gemini API Configuration ---
-# WARNING: Hardcoding API keys is not secure for production.
-# It is better to use environment variables.
-# However, per your request, the key is placed directly here.
+# Load .env BEFORE anything else
+env_path = Path(__file__).resolve().parent.parent / '.env'
+if env_path.exists():
+    dotenv.load_dotenv(env_path, override=True)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    raise RuntimeError("❌ GEMINI_API_KEY not found in environment")
+    raise RuntimeError(f"❌ GEMINI_API_KEY not found in environment variables.")
+client = genai.Client(api_key=GEMINI_API_KEY)
+logger = logging.getLogger(__name__)
+
+# Import Django models AFTER env is loaded
+from userFood.models import FoodItem, FoodType, MealType, Allergen, LEVEL_CHOICES
+
+
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -382,3 +381,164 @@ JSON Structure (Reflecting the parsed query):
     except Exception as e:
         traceback.print_exc()
         raise ValueError(f"An API or database error occurred for '{food_query}': {e}")
+    
+
+# ================================================================
+# APPEND THIS ENTIRE BLOCK to the bottom of your utils/gemini.py
+# ================================================================
+
+def suggest_foods_gemini(remaining_nutrients: dict, user_profile, meal_type: str = None):
+    """
+    Fallback: ask Gemini for food suggestions when the DB pool is too small.
+    Uses the same google.genai client already initialised at the top of gemini.py.
+    Creates / updates FoodItem records so they are cached for future requests.
+    Returns list of FoodItem instances.
+    """
+    import json as _json
+    from userFood.models import FoodItem, FoodType, MealType, Allergen
+
+    diet_type   = getattr(user_profile, "diet_type",   "Any")   or "Any"
+    country     = getattr(user_profile, "country",     "India") or "India"
+    allergies   = getattr(user_profile, "allergies",   "None")  or "None"
+    is_diabetic = bool(getattr(user_profile, "is_diabetic", False))
+
+    meal_hint = f"for {meal_type}" if meal_type else "for any meal"
+
+    prompt = f"""
+You are a clinical nutritionist AI. Suggest 5 whole-food meal options {meal_hint}
+for a person with the following profile:
+- Remaining calories today : {remaining_nutrients.get('calories', 400)} kcal
+- Remaining protein today  : {remaining_nutrients.get('protein_g', 25)}g
+- Diet type                : {diet_type}
+- Country / cuisine pref   : {country}
+- Allergies                : {allergies}
+- Diabetic                 : {is_diabetic}
+
+Rules:
+1. Suggest region-appropriate foods for {country}.
+2. Respect diet type — no Non-Vegetarian items if diet is vegetarian/vegan.
+3. Each food's calories MUST be <= {remaining_nutrients.get('calories', 400) * 0.75:.0f} kcal.
+4. If diabetic, keep estimated_gi < 55.
+5. Return ONLY a valid JSON array of exactly 5 objects. No markdown, no preamble.
+
+Each object must use these exact keys:
+{{
+  "name": "<food name>",
+  "default_quantity": <float>,
+  "default_unit": "<piece|cup|bowl|g>",
+  "gram_equivalent": <float or null>,
+  "calories": <float>,
+  "protein": <float>,
+  "carbs": <float>,
+  "fats": <float>,
+  "fiber": <float or null>,
+  "sugar": <float or null>,
+  "saturated_fat_g": <float or null>,
+  "trans_fat_g": <float or null>,
+  "estimated_gi": <float or null>,
+  "glycemic_load": <float or null>,
+  "sodium_mg": <float or null>,
+  "potassium_mg": <float or null>,
+  "iron_mg": <float or null>,
+  "calcium_mg": <float or null>,
+  "iodine_mcg": <float or null>,
+  "zinc_mg": <float or null>,
+  "magnesium_mg": <float or null>,
+  "selenium_mcg": <float or null>,
+  "cholesterol_mg": <float or null>,
+  "omega_3_g": <float or null>,
+  "vitamin_d_mcg": <float or null>,
+  "vitamin_b12_mcg": <float or null>,
+  "fodmap_level": "<Low|Medium|High|None>",
+  "spice_level": "<Low|Medium|High|None>",
+  "purine_level": "<Low|Medium|High|None>",
+  "food_types": ["<Vegetarian|Non-Vegetarian|Vegan>"],
+  "meal_types": ["<Breakfast|Lunch|Dinner|Snack>"],
+  "allergens": ["<name>"]
+}}
+"""
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config={
+                "temperature": 0.2,
+                "response_mime_type": "application/json",
+            },
+        )
+
+        raw = response.text.strip()
+        # Strip markdown fences if model adds them despite instructions
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+
+        items = _json.loads(raw)
+        if not isinstance(items, list):
+            return []
+
+        food_objects = []
+        for item in items:
+            name = (item.get("name") or "").strip()
+            if not name:
+                continue
+
+            defaults = {
+                "default_quantity":  get_nullable_float(item, "default_quantity") or 1.0,
+                "default_unit":      item.get("default_unit") or "serving",
+                "gram_equivalent":   get_nullable_float(item, "gram_equivalent"),
+                "calories":          get_nullable_float(item, "calories")        or 0.0,
+                "protein":           get_nullable_float(item, "protein")         or 0.0,
+                "carbs":             get_nullable_float(item, "carbs")           or 0.0,
+                "fats":              get_nullable_float(item, "fats")            or 0.0,
+                "fiber":             get_nullable_float(item, "fiber"),
+                "sugar":             get_nullable_float(item, "sugar"),
+                "saturated_fat_g":   get_nullable_float(item, "saturated_fat_g"),
+                "trans_fat_g":       get_nullable_float(item, "trans_fat_g"),
+                "estimated_gi":      get_nullable_float(item, "estimated_gi"),
+                "glycemic_load":     get_nullable_float(item, "glycemic_load"),
+                "sodium_mg":         get_nullable_float(item, "sodium_mg"),
+                "potassium_mg":      get_nullable_float(item, "potassium_mg"),
+                "iron_mg":           get_nullable_float(item, "iron_mg"),
+                "calcium_mg":        get_nullable_float(item, "calcium_mg"),
+                "iodine_mcg":        get_nullable_float(item, "iodine_mcg"),
+                "zinc_mg":           get_nullable_float(item, "zinc_mg"),
+                "magnesium_mg":      get_nullable_float(item, "magnesium_mg"),
+                "selenium_mcg":      get_nullable_float(item, "selenium_mcg"),
+                "cholesterol_mg":    get_nullable_float(item, "cholesterol_mg"),
+                "omega_3_g":         get_nullable_float(item, "omega_3_g"),
+                "vitamin_d_mcg":     get_nullable_float(item, "vitamin_d_mcg"),
+                "vitamin_b12_mcg":   get_nullable_float(item, "vitamin_b12_mcg"),
+                "fodmap_level":      (item.get("fodmap_level") or "Low").title(),
+                "spice_level":       (item.get("spice_level")  or "Low").title(),
+                "purine_level":      (item.get("purine_level") or "Low").title(),
+                "is_verified":       False,
+            }
+
+            food_obj, _ = FoodItem.objects.update_or_create(
+                name__iexact=name,
+                defaults={"name": name, **defaults},
+            )
+
+            # M2M
+            ft_objs = [FoodType.objects.get_or_create(name=n.strip())[0]
+                       for n in item.get("food_types", []) if n.strip()]
+            mt_objs = [MealType.objects.get_or_create(name=n.strip())[0]
+                       for n in item.get("meal_types", []) if n.strip()]
+            al_objs = [Allergen.objects.get_or_create(name=n.strip())[0]
+                       for n in item.get("allergens", [])
+                       if n.strip().lower() not in ("none", "")]
+
+            if ft_objs: food_obj.food_types.set(ft_objs)
+            if mt_objs: food_obj.meal_types.set(mt_objs)
+            if al_objs: food_obj.allergens.set(al_objs)
+
+            food_objects.append(food_obj)
+
+        return food_objects
+
+    except Exception as exc:
+        logger.warning(f"suggest_foods_gemini error: {exc}")
+        return []
