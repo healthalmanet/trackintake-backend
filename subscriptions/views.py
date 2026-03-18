@@ -246,6 +246,44 @@ class NutritionistRegistrationOrderView(APIView):
             "plan": {"id": plan.id, "name": plan.name, "price": plan.price}
         }, status=status.HTTP_201_CREATED)
 
+# class VerifyPaymentView(APIView):
+#     permission_classes = [AllowAny]
+
+#     def post(self, request):
+#         order_id = request.data.get("razorpay_order_id")
+#         payment_id = request.data.get("razorpay_payment_id")
+#         signature = request.data.get("razorpay_signature")
+
+#         if not all([order_id, payment_id, signature]):
+#             return Response({"error": "Missing payment fields"}, status=400)
+
+#         # Verify signature
+#         expected = hmac.new(
+#             settings.RAZORPAY_KEY_SECRET.encode(),
+#             f"{order_id}|{payment_id}".encode(),
+#             hashlib.sha256
+#         ).hexdigest()
+
+#         if not hmac.compare_digest(expected, signature):
+#             return Response({"error": "Invalid signature"}, status=400)
+
+#         try:
+#             payment = Payment.objects.get(
+#                 razorpay_order_id=order_id,
+#                 status="pending",
+#             )
+#             payment.razorpay_payment_id = payment_id
+#             payment.status = "success"
+#             payment.save(update_fields=["razorpay_payment_id", "status"])
+
+#             if payment.user:
+#                 from .services import activate_plan_for_user
+#                 activate_plan_for_user(user=payment.user, plan=payment.plan)
+
+#         except Payment.DoesNotExist:
+#             pass
+
+#         return Response({"status": "ok"})
 class VerifyPaymentView(APIView):
     permission_classes = [AllowAny]
 
@@ -257,7 +295,7 @@ class VerifyPaymentView(APIView):
         if not all([order_id, payment_id, signature]):
             return Response({"error": "Missing payment fields"}, status=400)
 
-        # Verify signature
+        # Signature verify karo
         expected = hmac.new(
             settings.RAZORPAY_KEY_SECRET.encode(),
             f"{order_id}|{payment_id}".encode(),
@@ -267,6 +305,7 @@ class VerifyPaymentView(APIView):
         if not hmac.compare_digest(expected, signature):
             return Response({"error": "Invalid signature"}, status=400)
 
+        # ✅ Normal plan payment
         try:
             payment = Payment.objects.get(
                 razorpay_order_id=order_id,
@@ -283,18 +322,58 @@ class VerifyPaymentView(APIView):
         except Payment.DoesNotExist:
             pass
 
+        # ✅ Consultation fee payment — Razorpay se notes fetch karo
+        try:
+            client = razorpay.Client(
+                auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
+            )
+            rzp_payment = client.payment.fetch(payment_id)
+            notes = rzp_payment.get("notes", {})
+
+            if notes.get("type") == "consultation_fee":
+                consult_type = notes.get("consult_type")
+                user_id = notes.get("user_id")
+
+                subscription = UserSubscription.objects.filter(
+                    user_id=user_id,
+                    is_active=True
+                ).first()
+
+                if subscription:
+                    if consult_type == "inhouse":
+                        subscription.remaining_inhouse += 1
+                    elif consult_type == "expert":
+                        subscription.remaining_expert += 1
+                    subscription.save(
+                        update_fields=["remaining_inhouse", "remaining_expert"]
+                    )
+                    print(f"✅ Consultation added: {consult_type} for user {user_id}")
+
+        except Exception as e:
+            print(f"❌ Consultation fee update error: {e}")
+
         return Response({"status": "ok"})
 class PayConsultationFeeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        consult_type = request.data.get("consult_type")  # inhouse ya expert
-        
+        consult_type = request.data.get("consult_type")
+
         if consult_type not in ["inhouse", "expert"]:
             return Response({"error": "Invalid consult_type"}, status=400)
 
-        # Ek single consultation ka order banao
-        amount = 200 if consult_type == "inhouse" else 500  # apni fees set karo
+        # ✅ User ki active subscription se plan lo
+        from subscriptions.utils import get_active_subscription
+        subscription = get_active_subscription(request.user)
+
+        if not subscription:
+            return Response({"error": "No active subscription"}, status=400)
+
+        # ✅ Plan se fee lo
+        if consult_type == "inhouse":
+            amount = subscription.plan.inhouse_consultation_fee
+        else:
+            amount = subscription.plan.expert_consultation_fee
 
         client = razorpay.Client(
             auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)

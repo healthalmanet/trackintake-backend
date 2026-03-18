@@ -36,6 +36,14 @@ class Plan(models.Model):
     meal_log_allowed = models.BooleanField(default=False)
     water_intake_allowed = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
+    inhouse_consultation_fee = models.PositiveIntegerField(
+        default=200,
+        help_text="Fee in rupees for single inhouse consultation"
+    )
+    expert_consultation_fee = models.PositiveIntegerField(
+        default=500,
+        help_text="Fee in rupees for single expert consultation"
+    )
 
     def __str__(self):
         return f"{self.name} ({self.get_plan_type_display()})"
