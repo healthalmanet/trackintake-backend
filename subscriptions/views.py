@@ -19,18 +19,24 @@ class MySubscriptionView(APIView):
     def get(self, request):
         subscription = (
             UserSubscription.objects
-            .filter(user=request.user, is_active=True)
+            .filter(
+                user=request.user,
+                is_active=True,
+                plan__plan_type='patient'
+            )
             .select_related("plan")
             .first()
         )
 
         if not subscription:
             return Response({
-                "plan": {"name": "Free", "price": 0},
-                "is_active": True
+                "has_plan": False,  # ✅ Yeh flag frontend use karega
+                "plan": {"name": "No Plan", "price": 0},
+                "is_active": False
             })
 
         return Response({
+            "has_plan": True,
             "plan": PlanSerializer(subscription.plan).data,
             "is_active": True,
             "expires_at": subscription.end_date,
@@ -48,7 +54,7 @@ class PlanListView(APIView):
 
     def get(self, request):
         plan_type = request.query_params.get("type")
-        qs = Plan.objects.filter(is_active=True).order_by("price")
+        qs = Plan.objects.filter(is_active=True, plan_type='patient')
         if plan_type:
             qs = qs.filter(plan_type=plan_type)
         serializer = PlanSerializer(qs, many=True)
@@ -278,3 +284,36 @@ class VerifyPaymentView(APIView):
             pass
 
         return Response({"status": "ok"})
+class PayConsultationFeeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        consult_type = request.data.get("consult_type")  # inhouse ya expert
+        
+        if consult_type not in ["inhouse", "expert"]:
+            return Response({"error": "Invalid consult_type"}, status=400)
+
+        # Ek single consultation ka order banao
+        amount = 200 if consult_type == "inhouse" else 500  # apni fees set karo
+
+        client = razorpay.Client(
+            auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
+        )
+        order = client.order.create({
+            "amount": amount * 100,
+            "currency": "INR",
+            "payment_capture": 1,
+            "notes": {
+                "user_id": request.user.id,
+                "consult_type": consult_type,
+                "type": "consultation_fee"
+            }
+        })
+
+        return Response({
+            "order_id": order["id"],
+            "amount": amount * 100,
+            "currency": "INR",
+            "key": settings.RAZORPAY_KEY_ID,
+            "consult_type": consult_type
+        })

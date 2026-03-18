@@ -162,14 +162,33 @@ class AppointmentCreateSerializer(serializers.Serializer):
         user = self.context["request"].user
         slot = validated_data["slot"]
         category = validated_data["appointment_category"]
-
-        # ✅ SINGLE SOURCE OF TRUTH
         consult_type = "inhouse" if category == "IN_HOUSE" else "expert"
 
-        consume_consultation(
-            user=user,
-            consult_type=consult_type
-        )
+        from subscriptions.utils import get_active_subscription
+        subscription = get_active_subscription(user)
+
+        if not subscription:
+            raise serializers.ValidationError({
+                "consultation_required": True,
+                "message": "Koi active subscription nahi hai."
+            })
+
+        if consult_type == "inhouse" and subscription.remaining_inhouse <= 0:
+            raise serializers.ValidationError({
+                "consultation_required": True,  # ✅ Frontend yeh flag check karega
+                "consult_type": "inhouse",
+                "message": "Inhouse consultations khatam ho gaye hain."
+            })
+
+        if consult_type == "expert" and subscription.remaining_expert <= 0:
+            raise serializers.ValidationError({
+                "consultation_required": True,
+                "consult_type": "expert",
+                "message": "Expert consultations khatam ho gaye hain."
+            })
+
+        consume_consultation(user=user, consult_type=consult_type)
+        # ... baaki create code same rahega
 
         with transaction.atomic():
             slot.is_booked = True

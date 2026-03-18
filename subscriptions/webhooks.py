@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from .models import Payment
 from .services import activate_plan_for_user
-
+from subscriptions.models import UserSubscription
 
 class RazorpayWebhook(APIView):
     permission_classes = [AllowAny]
@@ -36,25 +36,26 @@ class RazorpayWebhook(APIView):
             return Response({"error": "Invalid JSON"}, status=400)
 
         event = data.get("event")
-
         if event == "payment.captured":
             entity = data["payload"]["payment"]["entity"]
             order_id = entity["order_id"]
-            payment_id = entity["id"]
+            notes = entity.get("notes", {})
 
-            try:
-                payment = Payment.objects.get(
-                    razorpay_order_id=order_id,
-                    status="pending",
-                )
-                payment.razorpay_payment_id = payment_id
-                payment.status = "success"
-                payment.save(update_fields=["razorpay_payment_id", "status"])
-
-                if payment.user:
-                    activate_plan_for_user(user=payment.user, plan=payment.plan)
-
-            except Payment.DoesNotExist:
-                pass  # Idempotent — already processed or unknown order
-
-        return Response({"status": "ok"})
+            # ✅ Consultation fee payment handle karo
+            if notes.get("type") == "consultation_fee":
+                from django.contrib.auth import get_user_model
+                User = get_user_model()
+                user = User.objects.get(id=notes["user_id"])
+                consult_type = notes["consult_type"]
+                
+                subscription = UserSubscription.objects.filter(
+                    user=user, is_active=True
+                ).first()
+                
+                if subscription:
+                    if consult_type == "inhouse":
+                        subscription.remaining_inhouse += 1
+                    elif consult_type == "expert":
+                        subscription.remaining_expert += 1
+                    subscription.save(update_fields=["remaining_inhouse", "remaining_expert"])
+                return Response({"status": "ok"})

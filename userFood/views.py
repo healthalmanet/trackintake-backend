@@ -31,7 +31,7 @@ from .models import UserMeal, FoodItem, Allergen, FoodType, MealType
 from userProfile.models import UserProfile
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
-
+from subscriptions.utils import require_plan_feature
 
 # FUZZY_MATCH_THRESHOLD = 90
 
@@ -295,6 +295,7 @@ class UserMealViewSet(viewsets.ModelViewSet):
         return gemini_food_item
 
     def create(self, request, *args, **kwargs):
+        require_plan_feature(self.request.user, "meal_log_allowed") 
         def process_meal(item_data):
             food_name = item_data.get("food_name", "").strip()
             if not food_name:

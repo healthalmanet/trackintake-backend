@@ -72,6 +72,7 @@ class WaterIntakeLogViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         # ✅ Optional date handling
+        require_plan_feature(request.user, "water_intake_allowed")
         date_str = request.data.get('date')
         today = parse_date(date_str) if date_str else timezone.now().date()
 

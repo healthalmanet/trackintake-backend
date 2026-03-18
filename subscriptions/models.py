@@ -33,7 +33,8 @@ class Plan(models.Model):
     Fat_Calculator_allowed = models.BooleanField(default=False)
     expert_consults = models.PositiveIntegerField(default=0)
     inhouse_consults = models.PositiveIntegerField(default=0)
-
+    meal_log_allowed = models.BooleanField(default=False)
+    water_intake_allowed = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
     def __str__(self):
