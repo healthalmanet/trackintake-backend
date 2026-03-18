@@ -5,20 +5,30 @@ from .models import Plan, UserSubscription, Payment
 @admin.register(Plan)
 class PlanAdmin(admin.ModelAdmin):
     list_display = (
-        "id",
-        "name",
-        "plan_type",
-        "price",
-        "duration_days",
-        "weight_tracker_allowed",
-        "nutrition_search_allowed",
-        "custom_reminder_allowed",
-        "ai_diet_allowed",
-        "appointment_allowed",
-        "chat_allowed",
-        "BMI_Calculator_allowed",   # ← fixed casing
-        "Fat_Calculator_allowed",   # ← fixed casing
-        "is_active",
+            "id",
+            "name",
+            "plan_type",
+            "price",
+            "duration_days",
+
+            # Feature flags
+            "meal_log_allowed",
+            "water_intake_allowed",
+            "weight_tracker_allowed",
+            "custom_reminder_allowed",
+            "chat_allowed",
+            "nutrition_search_allowed",
+
+            # Core features
+            "appointment_allowed",
+            "ai_diet_allowed",
+            "BMI_Calculator_allowed",
+            "Fat_Calculator_allowed",
+
+            # Limits
+            "expert_consults",
+            "inhouse_consults",# ← fixed casing
+            "is_active",
     )
 
     list_filter = (
