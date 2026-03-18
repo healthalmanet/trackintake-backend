@@ -5,48 +5,38 @@ from .models import Plan, UserSubscription, Payment
 @admin.register(Plan)
 class PlanAdmin(admin.ModelAdmin):
     list_display = (
-            "id",
-            "name",
-            "plan_type",
-            "price",
-            "duration_days",
-
-            # Feature flags
-            "meal_log_allowed",
-            "water_intake_allowed",
-            "weight_tracker_allowed",
-            "custom_reminder_allowed",
-            "chat_allowed",
-            "nutrition_search_allowed",
-
-            # Core features
-            "appointment_allowed",
-            "ai_diet_allowed",
-            "BMI_Calculator_allowed",
-            "Fat_Calculator_allowed",
-
-            # Limits
-            "expert_consults",
-            "inhouse_consults",# ← fixed casing
-            "is_active",
-    )
-
-    list_filter = (
+        "id",
+        "name",
         "plan_type",
-        "is_active",
+        "price",
+        "duration_days",
+        "meal_log_allowed",        # ✅ ADD
+        "water_intake_allowed",    # ✅ ADD
         "weight_tracker_allowed",
         "nutrition_search_allowed",
         "custom_reminder_allowed",
         "ai_diet_allowed",
         "appointment_allowed",
         "chat_allowed",
-        "BMI_Calculator_allowed",   # ← added
-        "Fat_Calculator_allowed",   # ← added
+        "BMI_Calculator_allowed",
+        "Fat_Calculator_allowed",
+        "is_active",
     )
 
-    search_fields = ("name",)
-    list_editable = ("price", "is_active")
-    ordering = ("plan_type", "price")
+    list_filter = (
+        "plan_type",
+        "is_active",
+        "meal_log_allowed",        # ✅ ADD
+        "water_intake_allowed",    # ✅ ADD
+        "weight_tracker_allowed",
+        "nutrition_search_allowed",
+        "custom_reminder_allowed",
+        "ai_diet_allowed",
+        "appointment_allowed",
+        "chat_allowed",
+        "BMI_Calculator_allowed",
+        "Fat_Calculator_allowed",
+    )
 
     fieldsets = (
         ("Basic Info", {
@@ -54,14 +44,16 @@ class PlanAdmin(admin.ModelAdmin):
         }),
         ("Features", {
             "fields": (
+                "meal_log_allowed",        # ✅ ADD
+                "water_intake_allowed",    # ✅ ADD
                 "weight_tracker_allowed",
                 "nutrition_search_allowed",
                 "custom_reminder_allowed",
                 "ai_diet_allowed",
                 "appointment_allowed",
                 "chat_allowed",
-                "BMI_Calculator_allowed",   # ← added
-                "Fat_Calculator_allowed",   # ← added
+                "BMI_Calculator_allowed",
+                "Fat_Calculator_allowed",
             )
         }),
         ("Limits", {
