@@ -53,10 +53,10 @@ class PlanListView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        plan_type = request.query_params.get("type")
-        qs = Plan.objects.filter(is_active=True, plan_type='patient')
+        plan_type = request.query_params.get("type", "").strip().lower()
+        qs = Plan.objects.filter(is_active=True)
         if plan_type:
-            qs = qs.filter(plan_type=plan_type)
+            qs = qs.filter(plan_type__iexact=plan_type).order_by("price")
         serializer = PlanSerializer(qs, many=True)
         return Response(serializer.data)
 
