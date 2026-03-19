@@ -10,6 +10,8 @@ class PlanAdmin(admin.ModelAdmin):
         "plan_type",
         "price",
         "duration_days",
+        "inhouse_consultation_fee",  # ✅ ADD
+        "expert_consultation_fee",
         "meal_log_allowed",        # ✅ ADD
         "water_intake_allowed",    # ✅ ADD
         "weight_tracker_allowed",
@@ -57,7 +59,7 @@ class PlanAdmin(admin.ModelAdmin):
             )
         }),
         ("Limits", {
-            "fields": ("expert_consults", "inhouse_consults")
+            "fields": ("expert_consults", "inhouse_consults","inhouse_consultation_fee","expert_consultation_fee")
         }),
     )
 
