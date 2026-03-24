@@ -1385,7 +1385,7 @@ def build_suggestions(user, meal_type=None, limit=5, period=None) -> dict:
     targets = nutrient_data["targets"]
     ws_push = (
         remaining["protein_g"] > targets["protein_g"] * 0.30
-        or nutrient_data["pct_cal_consumed"] < 60
+        or nutrient_data["pct_cal_consumed"] < 100
     )
     hour    = timezone.localtime(timezone.now()).hour
     email_q = (19 <= hour < 20)

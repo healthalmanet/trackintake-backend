@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from .models import AppointmentReminder
 from nutritionist.models import PatientAssignment
 from subscriptions.services import consume_consultation
-
+from appointments.zoom_service import create_zoom_meeting
 User = get_user_model()
 
 # ---------- Slots ----------
@@ -26,78 +26,6 @@ class AvailabilitySlotCreateSerializer(serializers.ModelSerializer):
         model = AvailabilitySlot
         fields = ['date', 'start_time', 'end_time']
 
-
-# ---------- Appointment ----------
-# class AppointmentCreateSerializer(serializers.Serializer):
-#     slot_id = serializers.IntegerField()
-#     appointment_type = serializers.ChoiceField(
-#         choices=['IN_PERSON', 'VIRTUAL']
-#     )
-
-#     def validate(self, data):
-#         try:
-#             slot = AvailabilitySlot.objects.get(id=data['slot_id'])
-#         except AvailabilitySlot.DoesNotExist:
-#             raise serializers.ValidationError("Invalid slot")
-
-#         if slot.is_booked:
-#             raise serializers.ValidationError("Slot already booked")
-
-#         if data['appointment_type'] == 'VIRTUAL':
-#             try:
-#                 profile = slot.nutritionist.nutritionist_profile
-#             except ObjectDoesNotExist:
-#                 raise serializers.ValidationError(
-#                     "Nutritionist profile missing. Virtual not allowed."
-#                 )
-
-#             if not profile.is_virtual_enabled:
-#                 raise serializers.ValidationError(
-#                     "Nutritionist does not support virtual appointments."
-#                 )
-    
-#         data['slot'] = slot
-#         return data
-
-#     def create(self, validated_data):
-#         user = self.context['request'].user
-#         slot = validated_data['slot']
-
-#         with transaction.atomic():
-#             slot.is_booked = True
-#             slot.save()
-
-#             appointment = Appointment.objects.create(
-#                 patient=user,
-#                 nutritionist=slot.nutritionist,
-#                 slot=slot,
-#                 appointment_type=validated_data['appointment_type'],
-#                 meeting_link=self._generate_meeting_link(validated_data)
-#             )
-#             appointment_start = timezone.make_aware(
-#                 datetime.combine(slot.date, slot.start_time)
-#             )
-
-#             AppointmentReminder.objects.bulk_create([
-#                 AppointmentReminder(
-#                     appointment=appointment,
-#                     remind_at=appointment_start - timedelta(hours=24),
-#                     reminder_type="24H"
-#                 ),
-#                 AppointmentReminder(
-#                     appointment=appointment,
-#                     remind_at=appointment_start - timedelta(hours=2),
-#                     reminder_type="2H"
-#                 )
-#             ])
-
-
-#         return appointment
-
-#     def _generate_meeting_link(self, data):
-#         if data['appointment_type'] == 'VIRTUAL':
-#             return f"https://meet.google.com/{uuid.uuid4().hex[:10]}"
-#         return None
 
 class AppointmentCreateSerializer(serializers.Serializer):
     slot_id = serializers.IntegerField()
@@ -187,10 +115,15 @@ class AppointmentCreateSerializer(serializers.Serializer):
                 "message": "Expert consultations khatam ho gaye hain."
             })
 
-        consume_consultation(user=user, consult_type=consult_type)
+        
         # ... baaki create code same rahega
 
         with transaction.atomic():
+            slot = AvailabilitySlot.objects.select_for_update().get(id=slot.id)
+
+            if slot.is_booked:
+                raise serializers.ValidationError("Slot already booked")
+
             slot.is_booked = True
             slot.save()
 
@@ -209,6 +142,38 @@ class AppointmentCreateSerializer(serializers.Serializer):
                 selected_expert = nutritionist
                 assigned_by = "USER"
 
+            meeting_link = None
+
+# 🔥 ZOOM INTEGRATION
+            if validated_data["appointment_type"] == "VIRTUAL":
+                try:
+                    appointment_start = timezone.make_aware(
+                        datetime.combine(slot.date, slot.start_time)
+                    )
+
+                    duration = int(
+                        (datetime.combine(slot.date, slot.end_time) -
+                        datetime.combine(slot.date, slot.start_time)
+                        ).total_seconds() / 60
+                    )
+
+                    zoom_response = create_zoom_meeting(
+                        topic=f"Consultation with {nutritionist.full_name}",
+                        start_time_str=appointment_start.isoformat(),
+                        duration=duration
+                    )
+
+                    if "join_url" not in zoom_response:
+                        print("❌ Zoom API Error Response:", zoom_response)
+                        raise serializers.ValidationError("Zoom meeting creation failed")
+
+                    meeting_link = zoom_response["join_url"]
+
+                except Exception as e:
+                    print("❌ Zoom creation failed:", str(e))
+                    raise serializers.ValidationError("Zoom meeting creation failed")
+
+            # ✅ CREATE APPOINTMENT WITH LINK
             appointment = Appointment.objects.create(
                 patient=user,
                 nutritionist=nutritionist,
@@ -217,7 +182,9 @@ class AppointmentCreateSerializer(serializers.Serializer):
                 appointment_category=category,
                 appointment_type=validated_data["appointment_type"],
                 assigned_by=assigned_by,
+                meeting_link=meeting_link
             )
+            consume_consultation(user=user, consult_type=consult_type)
             appointment_start = timezone.make_aware(
                 datetime.combine(slot.date, slot.start_time)
             )
@@ -246,44 +213,7 @@ class AppointmentCreateSerializer(serializers.Serializer):
 
 
 
-# class AppointmentListSerializer(serializers.ModelSerializer):
-#     slot = AvailabilitySlotSerializer()
-#     nutritionist_name = serializers.CharField(
-#         source="nutritionist.full_name", read_only=True
-#     )
 
-#     class Meta:
-#         model = Appointment
-#         fields = [
-#             "id",
-#             "appointment_type",
-#             "status",
-#             "meeting_link",
-#             "created_at",
-#             "nutritionist_name",
-#             "slot",
-#         ]
-        # class NutritionistSlotSerializer(serializers.ModelSerializer):
-        #     patient_name = serializers.CharField(
-        #         source="appointment.patient.full_name",
-        #         read_only=True
-        #     )
-        #     appointment_status = serializers.CharField(
-        #         source="appointment.status",
-        #         read_only=True
-        #     )
-
-        #     class Meta:
-        #         model = AvailabilitySlot
-        #         fields = [
-        #             "id",
-        #             "date",
-        #             "start_time",
-        #             "end_time",
-        #             "is_booked",
-        #             "patient_name",
-        #             "appointment_status",
-        #         ]
 class NutritionistSlotSerializer(serializers.ModelSerializer):
     patient = serializers.SerializerMethodField()
     appointment = serializers.SerializerMethodField()
