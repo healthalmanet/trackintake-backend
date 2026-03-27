@@ -113,9 +113,7 @@ urlpatterns = [
     path(
         "expert-nutritionists/",
         ExpertNutritionistListView.as_view(),
-        name="expert-nutritionists",
-    ),
-
+        name="expert-nutritionists",)
 
 
 
