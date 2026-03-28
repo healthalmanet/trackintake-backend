@@ -708,10 +708,8 @@ class FoodSuggestionView(APIView):
                     },
                 )
                 ws_pushed = True
-            except Exception as exc:
-                import logging
-                logging.getLogger(__name__).warning(f"WS suggestion push failed: {exc}")
-
+            except Exception:
+                pass  # No active WS connection — normal on Render, skip silently
         # ── Daily summary email (7 pm – 8 pm) ───────────────────
         if delivery.get("email_should_queue"):
             try:
