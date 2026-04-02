@@ -182,13 +182,37 @@ DATABASES = {
         ssl_require=not DEBUG,  # Enforce SSL in production, not locally
     )
 }
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {"hosts": [config("REDIS_URL", default='redis://localhost:6379')]},
-    },
-}
+# CHANNEL_LAYERS = {
+#     "default": {
+#         "BACKEND": "channels_redis.core.RedisChannelLayer",
+#         "CONFIG": {"hosts": [config("REDIS_URL", default='redis://localhost:6379')]},
+#     },
+# }
+_REDIS_URL = config("REDIS_URL", default='redis://localhost:6379')
 
+if _REDIS_URL.startswith("rediss://"):
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [
+                    {
+                        "address": _REDIS_URL,
+                        "ssl_cert_reqs": None,
+                    }
+                ],
+            },
+        },
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [_REDIS_URL],
+            },
+        },
+    }
 
 # ==============================================================================
 # CORS & EMAIL SETTINGS
