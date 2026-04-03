@@ -648,7 +648,7 @@ class ForgotPasswordView(generics.GenericAPIView):
             user = User.objects.get(email=email)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = PasswordResetTokenGenerator().make_token(user)
-            frontend_url = "https://track-eats.onrender.com/reset-password"
+            frontend_url = "https://trackintake.co.in/reset-password"
             reset_url = f"{frontend_url}/{uid}/{token}/"
 
             send_mail(
