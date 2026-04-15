@@ -97,6 +97,7 @@ INSTALLED_APPS = [
     "subscriptions",
     'daphne',
     'channels',
+    'chatbot',
     'corsheaders',
     "admin_interface",
     "colorfield",
@@ -148,6 +149,7 @@ INSTALLED_APPS = [
 # MIDDLEWARE
 # ==============================================================================
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware', 
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',

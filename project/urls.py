@@ -27,5 +27,6 @@ urlpatterns = [
     path('api/logout/', TokenBlacklistView.as_view(), name='logout'),
     path('api/appointments/', include('appointments.urls')),
     path("api/subscriptions/", include("subscriptions.urls")),
+    path('api/chatbot/', include('chatbot.urls')), 
 
 ]
