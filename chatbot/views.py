@@ -5,6 +5,7 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.parsers import JSONParser
 import re
+from rest_framework.permissions import AllowAny
 
 
     
@@ -142,7 +143,7 @@ NUTRITIONSECTIONS = {
 
 @method_decorator(csrf_exempt, name='dispatch')
 class ChatBotView(APIView):
-
+    permission_classes = [AllowAny]
     def get(self, request):
         return Response({"message": "Use POST method"})
 
