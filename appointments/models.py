@@ -373,3 +373,33 @@ class AppointmentReminder(models.Model):
             f"{self.reminder_type} reminder "
             f"for appointment {self.appointment.id}"
         )
+class AppointmentFeedback(models.Model):
+
+    ROLE_CHOICES = (
+        ("PATIENT", "Patient"),
+        ("NUTRITIONIST", "Nutritionist"),
+    )
+
+    appointment = models.ForeignKey(
+        Appointment,
+        on_delete=models.CASCADE,
+        related_name="feedbacks"
+    )
+
+    given_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE
+    )
+
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+
+    rating = models.IntegerField()  # 1–5
+    comment = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("appointment", "given_by")  # one feedback per user
+
+    def __str__(self):
+        return f"{self.role} feedback for appointment {self.appointment.id}"

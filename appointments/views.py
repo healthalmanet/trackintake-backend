@@ -280,7 +280,7 @@ from .serializers import (
     AvailabilitySlotCreateSerializer,
     AppointmentCreateSerializer,
     AppointmentListSerializer,
-    NutritionistSlotSerializer
+    NutritionistSlotSerializer,AppointmentFeedbackSerializer,
 )
 from rest_framework import status
 from django.shortcuts import get_object_or_404
@@ -518,3 +518,25 @@ class NutritionistMySlotsView(APIView):
                 qs.filter(is_booked=True), many=True
             ).data,
         })
+    
+class SubmitFeedbackView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, appointment_id):
+        appointment = get_object_or_404(Appointment, id=appointment_id)
+
+        serializer = AppointmentFeedbackSerializer(
+            data={
+                **request.data,
+                "given_by": request.user.id,
+                "role": "PATIENT",
+                "appointment": appointment.id
+            },
+            context={"request": request}
+        )
+
+        if serializer.is_valid():
+            serializer.save(appointment=appointment)
+            return Response({"message": "Feedback submitted"}, status=201)
+
+        return Response(serializer.errors, status=400)

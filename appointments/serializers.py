@@ -8,11 +8,19 @@ from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from datetime import datetime, timedelta
-from .models import AppointmentReminder
+from .models import AppointmentReminder,AppointmentFeedback
 from nutritionist.models import PatientAssignment
 from subscriptions.services import consume_consultation
 from appointments.zoom_service import create_zoom_meeting
 User = get_user_model()
+
+
+class FeedbackDisplaySerializer(serializers.ModelSerializer):
+    user_name = serializers.CharField(source="given_by.full_name")
+
+    class Meta:
+        model = AppointmentFeedback
+        fields = ["user_name", "role", "rating", "comment", "created_at"]
 
 # ---------- Slots ----------
 class AvailabilitySlotSerializer(serializers.ModelSerializer):
@@ -207,7 +215,28 @@ class AppointmentCreateSerializer(serializers.Serializer):
 
 
 
+class AppointmentFeedbackSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AppointmentFeedback
+        fields = ["id", "appointment", "rating", "comment", "created_at"]
+        read_only_fields = ["id", "created_at"]
 
+    def create(self, validated_data):
+        request = self.context["request"]
+        user = request.user
+        appointment = validated_data["appointment"]
+
+        # 🔒 SECURITY CHECK
+        if user != appointment.patient and user != appointment.nutritionist:
+            raise serializers.ValidationError("Not allowed")
+
+        role = "PATIENT" if user == appointment.patient else "NUTRITIONIST"
+
+        return AppointmentFeedback.objects.create(
+            given_by=user,
+            role=role,
+            **validated_data
+        )
 
 
 
@@ -260,16 +289,21 @@ class AppointmentListSerializer(serializers.ModelSerializer):
         source="nutritionist.full_name", read_only=True
     )
 
+    feedbacks = FeedbackDisplaySerializer(many=True, read_only=True)
+
     class Meta:
         model = Appointment
         fields = [
-            "id",
-            "appointment_category",
-            "appointment_type",
-            "status",
-            "assigned_by",
-            "meeting_link",
-            "created_at",
-            "nutritionist_name",
-            "slot",
-        ]
+                "id",
+                "appointment_category",
+                "appointment_type",
+                "status",
+                "assigned_by",
+                "meeting_link",
+                "created_at",
+                "nutritionist_name",
+                "slot",
+
+                # ✅ ADD THIS
+                "feedbacks",
+            ]

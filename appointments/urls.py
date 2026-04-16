@@ -90,7 +90,8 @@ from .views import (
     NutritionistAddAvailabilityView,
     NutritionistMySlotsView,
     NutritionistDeleteSlotView,CancelAppointmentView,
-    DeleteSlotView,MyInHouseNutritionistView,ExpertNutritionistListView
+    DeleteSlotView,MyInHouseNutritionistView,ExpertNutritionistListView,
+    SubmitFeedbackView
 )
 
 urlpatterns = [
@@ -113,7 +114,8 @@ urlpatterns = [
     path(
         "expert-nutritionists/",
         ExpertNutritionistListView.as_view(),
-        name="expert-nutritionists",)
+        name="expert-nutritionists",),
+    path("<int:appointment_id>/feedback/", SubmitFeedbackView.as_view(), name="submit-feedback")
 
 
 
