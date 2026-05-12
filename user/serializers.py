@@ -120,7 +120,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, data):
-        data['email'] = data['email'].lower()
+        data['email'] = data['email'].lower().strip()
         email = data.get('email')
         token = data.get('verification_token')
 
