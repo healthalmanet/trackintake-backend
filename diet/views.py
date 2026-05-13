@@ -3,17 +3,17 @@ from django.utils.timezone import now
 from rest_framework import status, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from ml_model.src.generator import generate_diet_plan
+# from ml_model.src.generator import generate_diet_plan
 from diet.serializers import DietRecommendationSerializer
 from userProfile.models import LabReport, UserProfile
 from .models import DietRecommendation
-import numpy as np
+# import numpy as np
 from django.core.paginator import Paginator
 from django.utils.dateparse import parse_date   
 
 from django.core.exceptions import ObjectDoesNotExist
 from asgiref.sync import sync_to_async
-import numpy as np
+# import numpy as np
 import traceback
 
 
@@ -131,20 +131,21 @@ class DietPlanView(APIView):
 
         try:
             print(f"Generating plan for user: {user.email}")
-            plan_json = generate_diet_plan(user.id)  # 🔹 AI model call
+            # plan_json = generate_diet_plan(user.id)  # 🔹 AI model call
+            return Response({'error': 'Local ML model is disabled. Please use the AI generation features.'}, status=status.HTTP_400_BAD_REQUEST)
 
             if isinstance(plan_json, dict) and "error" in plan_json:
                 return Response({'error': plan_json['error']}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # ✅ Convert np.int64/float64 to native int/float for JSONField
-            def convert_to_builtin_type(obj):
-                if isinstance(obj, (np.integer, np.int64)): return int(obj)
-                if isinstance(obj, (np.floating, np.float64)): return float(obj)
-                if isinstance(obj, dict): return {k: convert_to_builtin_type(v) for k, v in obj.items()}
-                if isinstance(obj, list): return [convert_to_builtin_type(i) for i in obj]
-                return obj
-
-            plan_json = convert_to_builtin_type(plan_json)
+#            # ✅ Convert np.int64/float64 to native int/float for JSONField
+#            def convert_to_builtin_type(obj):
+#                if isinstance(obj, (np.integer, np.int64)): return int(obj)
+#                if isinstance(obj, (np.floating, np.float64)): return float(obj)
+#                if isinstance(obj, dict): return {k: convert_to_builtin_type(v) for k, v in obj.items()}
+#                if isinstance(obj, list): return [convert_to_builtin_type(i) for i in obj]
+#                return obj
+#
+#            plan_json = convert_to_builtin_type(plan_json)
 
             new_recommendation = DietRecommendation.objects.create(
                 user=user,

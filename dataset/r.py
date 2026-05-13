@@ -1,6 +1,6 @@
 import os
 import django
-import pandas as pd
+# import pandas as pd
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 import sys

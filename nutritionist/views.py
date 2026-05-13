@@ -46,7 +46,7 @@ from utils.generative import (
 )
 from utils.pagination import StandardResultsSetPagination
 
-from ml_model.src.generator import generate_diet_plan
+# from ml_model.src.generator import generate_diet_plan
 
 from .models import PatientAssignment
 from .serializers import (

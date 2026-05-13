@@ -1,7 +1,7 @@
 # File: app/management/commands/import_food_data.py
 
 import os
-import pandas as pd
+# import pandas as pd
 from django.core.management.base import BaseCommand
 from django.core.exceptions import ValidationError
 from userFood.models import FoodItem
