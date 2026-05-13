@@ -203,6 +203,8 @@ if _REDIS_URL.startswith("rediss://"):
                         "ssl_cert_reqs": None,
                     }
                 ],
+                "capacity": 1500,  # Prevent message backlog from eating memory
+                "expiry": 60,      # Faster cleanup of stale channels
             },
         },
     }
@@ -212,6 +214,8 @@ else:
             "BACKEND": "channels_redis.core.RedisChannelLayer",
             "CONFIG": {
                 "hosts": [_REDIS_URL],
+                "capacity": 1500,
+                "expiry": 60,
             },
         },
     }
