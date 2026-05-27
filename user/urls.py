@@ -12,9 +12,16 @@ from .views import (
     get_feedback_for_recommendation,
     submit_diet_feedback,
 )
-
-
-
+from .integration_views import (
+    IntegrationRegisterView,
+    IntegrationPlanListView,
+    IntegrationCreateOrderView,
+    IntegrationVerifyPaymentView,
+    IntegrationCheckSubscriptionView,
+    IntegrationLabReportViewSet,
+    IntegrationUserProfileView,
+    IntegrationDietPlanView,
+)
 
 urlpatterns = [
 
@@ -38,7 +45,16 @@ urlpatterns = [
     path('reset-password/', ResetPasswordView.as_view(), name='reset-password'),
 
 
-
+    # User Integration APIs
+    path('integration/register/', IntegrationRegisterView.as_view(), name='integration-register'),
+    path('integration/plans/', IntegrationPlanListView.as_view(), name='integration-plans'),
+    path('integration/create-order/', IntegrationCreateOrderView.as_view(), name='integration-create-order'),
+    path('integration/verify-payment/', IntegrationVerifyPaymentView.as_view(), name='integration-verify-payment'),
+    path('integration/check-subscription/', IntegrationCheckSubscriptionView.as_view(), name='integration-check-subscription'),
+    path('integration/profile/', IntegrationUserProfileView.as_view(), name='integration-profile'),
+    path('integration/lab-reports/', IntegrationLabReportViewSet.as_view({'get': 'list', 'post': 'create'}), name='integration-lab-reports-list'),
+    path('integration/lab-reports/<int:pk>/', IntegrationLabReportViewSet.as_view({'get': 'retrieve', 'put': 'update', 'patch': 'partial_update', 'delete': 'destroy'}), name='integration-lab-reports-detail'),
+    path('integration/diet/', IntegrationDietPlanView.as_view(), name='integration-diet'),
 
 
     #User Diet Feedback APIs
