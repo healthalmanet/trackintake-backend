@@ -223,9 +223,21 @@ else:
 # ==============================================================================
 # CORS & EMAIL SETTINGS
 # ==============================================================================
-CORS_ALLOWED_ORIGINS = ["http://localhost:5173","https://trackeats-1.onrender.com","https://trackeats.onrender.com", "https://track-eats.onrender.com","https://trackeats-qfl8.onrender.com","https://trackintake-backend.onrender.com","https://trackintake.onrender.com","https://trackintake.co.in"]
+cors_default = "http://localhost:5173,https://trackeats-1.onrender.com,https://trackeats.onrender.com,https://track-eats.onrender.com,https://trackeats-qfl8.onrender.com,https://trackintake-backend.onrender.com,https://trackintake.onrender.com,https://trackintake.co.in"
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in config("CORS_ALLOWED_ORIGINS", default=cors_default).split(",")
+    if origin.strip()
+]
+
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = ["https://track-eats.onrender.com","https://trackeats.onrender.com", "https://trackeats-1.onrender.com", "http://localhost:5173","https://trackeats-qfl8.onrender.com","https://trackintake-backend.onrender.com","https://trackintake.onrender.com","https://trackintake.co.in"]
+
+csrf_default = "https://track-eats.onrender.com,https://trackeats.onrender.com,https://trackeats-1.onrender.com,http://localhost:5173,https://trackeats-qfl8.onrender.com,https://trackintake-backend.onrender.com,https://trackintake.onrender.com,https://trackintake.co.in"
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in config("CSRF_TRUSTED_ORIGINS", default=csrf_default).split(",")
+    if origin.strip()
+]
 # ==============================
 # RESEND SMTP CONFIG
 # ==============================
