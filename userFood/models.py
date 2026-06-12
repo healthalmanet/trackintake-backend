@@ -168,15 +168,16 @@ class UserMeal(models.Model):
         user_quantity = self.quantity
         user_unit_lower = self.unit.lower()
 
-        if not food_item.gram_equivalent or food_item.gram_equivalent <= 0:
-            return
-
         factor = 1.0
-        
+
         if user_unit_lower in MASS_UNIT_TO_GRAMS:
+            # Mass-based unit: scale by grams relative to gram_equivalent.
+            # If gram_equivalent is missing/zero, fall back to default_quantity as the base serving.
+            base_grams = food_item.gram_equivalent if (food_item.gram_equivalent and food_item.gram_equivalent > 0) \
+                else (food_item.default_quantity or 1.0)
             conversion_to_grams = MASS_UNIT_TO_GRAMS[user_unit_lower]
             logged_grams = user_quantity * conversion_to_grams
-            factor = logged_grams / food_item.gram_equivalent
+            factor = logged_grams / base_grams
         else:
             factor = user_quantity
 
@@ -199,7 +200,8 @@ class UserMeal(models.Model):
         Overrides save to ensure data is always consistent and calculated correctly.
         """
         if self.food_item:
-            self.food_name = self.food_item.name
+            if not self.food_name:
+                self.food_name = self.food_item.name
             self._calculate_and_set_nutrients()
 
         if not self.consumed_at:

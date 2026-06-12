@@ -1,3 +1,4 @@
+import logging
 from datetime import date, timedelta, datetime, time
 from django.utils import timezone
 from django.utils.timezone import now
@@ -7,6 +8,8 @@ from django.contrib.postgres.search import TrigramSimilarity
 from dateutil import parser
 import traceback
 from django.db.models import Sum
+
+logger = logging.getLogger(__name__)
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, status, filters
 from django.core.exceptions import ValidationError
@@ -22,7 +25,7 @@ from django.utils.timezone import make_aware
 
 
 from utils.pagination import StandardResultsSetPagination
-from utils.gemini import fetch_nutrition_from_gemini
+from utils.gemini import fetch_nutrition_from_gemini, GeminiUnavailableError
 from utils.utils import get_target_nutrients, send_email_notification_CALORIE, send_sms_notification
 
 from .serializers import UserMealSerializer
@@ -266,32 +269,40 @@ class UserMealViewSet(viewsets.ModelViewSet):
         if not original_food_name:
             raise ValueError("`food_name` cannot be empty.")
 
-        # 1. Exact match (fastest and most accurate)
+        # 1. Exact match — only use it if the record has real nutrition data
         food = FoodItem.objects.filter(name__iexact=original_food_name).first()
-        if food:
+        if food and (food.calories or 0) > 0:
             return food
 
-        # 2. Conditional Fuzzy Match
+        # 2. Fuzzy match (multi-word names only) — same guard
         if len(original_food_name.split()) > 1:
             food = FoodItem.objects.annotate(
                 similarity=TrigramSimilarity('name', original_food_name)
             ).filter(similarity__gt=FUZZY_MATCH_THRESHOLD).order_by('-similarity').first()
-            if food:
+            if food and (food.calories or 0) > 0:
                 return food
 
         # 3. Gemini fallback to get a standardized food item
         print(f"🔄 Fallback: Querying Gemini API for a profile of '{original_food_name}'...")
-        
-        # This function call returns the saved FoodItem object from Gemini
-        gemini_food_item = fetch_nutrition_from_gemini(original_food_name, quantity, unit)
+        try:
+            gemini_food_item = fetch_nutrition_from_gemini(original_food_name, quantity, unit)
+        except GeminiUnavailableError:
+            logger.warning(f"⚠️ Gemini unavailable for '{original_food_name}', saving placeholder FoodItem.")
+            gemini_food_item, _ = FoodItem.objects.get_or_create(
+                name__iexact=original_food_name,
+                defaults={
+                    'name': original_food_name.title(),
+                    'calories': 0.0, 'protein': 0.0, 'carbs': 0.0, 'fats': 0.0,
+                    'default_quantity': quantity, 'default_unit': unit,
+                    'gram_equivalent': 0.0, 'is_verified': False,
+                }
+            )
+            return gemini_food_item
 
         if not gemini_food_item:
             raise ValueError(f"Could not find nutrition info for '{original_food_name}'")
 
-        # THE CHANGE IS HERE: We no longer check or swap names. We simply trust
-        # and return the standardized food item that Gemini provided.
-        print(f"✅ Standardized name via Gemini: User typed '{original_food_name}', using '{gemini_food_item.name}'.")
-        
+        print(f"✅ Gemini resolved '{original_food_name}' → '{gemini_food_item.name}'.")
         return gemini_food_item
 
     def create(self, request, *args, **kwargs):
@@ -316,6 +327,7 @@ class UserMealViewSet(viewsets.ModelViewSet):
             
             meal = UserMeal(
                 user=request.user, food_item=food,
+                food_name=food_name,
                 quantity=quantity, unit=unit,
                 meal_type=item_data.get("meal_type", "breakfast"),
                 remarks=item_data.get("remarks", ""),
@@ -360,6 +372,11 @@ class UserMealViewSet(viewsets.ModelViewSet):
 
         except (ValueError, ValidationError) as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except GeminiUnavailableError:
+            return Response(
+                {"error": "Nutrition lookup is temporarily unavailable. Your meal was saved without nutrition data."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
         except Exception:
             traceback.print_exc()
             return Response({"error": "An unexpected error occurred while logging meals."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -373,6 +390,7 @@ class UserMealViewSet(viewsets.ModelViewSet):
                     instance.food_item = self._find_or_create_food_item(
                         data["food_name"], float(data.get("quantity", instance.quantity)), data.get("unit", instance.unit)
                     )
+                    instance.food_name = data["food_name"].strip()
                 
                 instance.quantity = float(data.get("quantity", instance.quantity))
                 instance.unit = data.get("unit", instance.unit)
