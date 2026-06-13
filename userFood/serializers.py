@@ -75,6 +75,7 @@ class UserMealSerializer(serializers.ModelSerializer):
             "food_name_display",
             "quantity",
             "unit",
+            "portion_size",
             "meal_type",
             "remarks",
             "consumed_at",
@@ -84,6 +85,7 @@ class UserMealSerializer(serializers.ModelSerializer):
             "gram_equivalent", 
 
             # Field for INPUT (what the user sends)
+            "portion_size",
             "food_name_input",
         ]
         

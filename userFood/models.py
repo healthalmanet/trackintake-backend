@@ -106,10 +106,32 @@ class FoodItem(models.Model):
 
 
 ###############################----------------------------Foood Table End_---------------------################################
+# Strict mass/volume units — convert directly to grams (1 ml ≈ 1 g water-density assumption)
 MASS_UNIT_TO_GRAMS = {
     "g": 1.0, "gram": 1.0,
     "kg": 1000.0, "kilogram": 1000.0,
     "mg": 0.001, "milligram": 0.001,
+    "milliliters": 1.0, "ml": 1.0,
+    "liters": 1000.0, "liter": 1000.0, "l": 1000.0,
+}
+
+# Serving/household units — approximate grams per 1 unit
+# food_item.gram_equivalent overrides these when the FoodItem has a known serving weight
+SERVING_UNIT_TO_GRAMS = {
+    "cup": 240.0,
+    "glass": 350.0,     # tall glass ≈ 350 ml
+    "bowl": 300.0,
+    "plate": 350.0,
+    "piece": 100.0,
+    "slice": 30.0,
+    "tbsp": 15.0,
+    "tablespoon": 15.0,
+    "tsp": 5.0,
+    "teaspoon": 5.0,
+    "handful": 30.0,
+    "pinch": 0.5,
+    "dash": 1.0,
+    "sprinkle": 2.0,
 }
 
 class UserMeal(models.Model):
@@ -132,6 +154,13 @@ class UserMeal(models.Model):
        ("Bedtime", "Bedtime"),
     ]
 
+    PORTION_CHOICES = [
+        ("Small", "Small"),
+        ("Medium", "Medium"),
+        ("Large", "Large"),
+    ]
+    PORTION_MULTIPLIERS = {"Small": 0.75, "Medium": 1.0, "Large": 1.5}
+
     # --- These Core Fields must be exactly the same ---
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     food_item = models.ForeignKey('FoodItem', on_delete=models.SET_NULL, null=True, blank=True)
@@ -139,6 +168,7 @@ class UserMeal(models.Model):
 
     quantity = models.FloatField()
     unit = models.CharField(max_length=20, choices=UNIT_CHOICES, default="Gram")
+    portion_size = models.CharField(max_length=10, choices=PORTION_CHOICES, default="Medium", blank=True)
     meal_type = models.CharField(max_length=30, choices=MEAL_CHOICES)
 
     consumed_at = models.DateTimeField(blank=True, null=True)
@@ -167,19 +197,28 @@ class UserMeal(models.Model):
         food_item = self.food_item
         user_quantity = self.quantity
         user_unit_lower = self.unit.lower()
+        portion_multiplier = self.PORTION_MULTIPLIERS.get(self.portion_size, 1.0)
 
         factor = 1.0
+        base_grams = food_item.gram_equivalent if (food_item.gram_equivalent and food_item.gram_equivalent > 0) \
+            else (food_item.default_quantity or 100.0)
 
         if user_unit_lower in MASS_UNIT_TO_GRAMS:
-            # Mass-based unit: scale by grams relative to gram_equivalent.
-            # If gram_equivalent is missing/zero, fall back to default_quantity as the base serving.
-            base_grams = food_item.gram_equivalent if (food_item.gram_equivalent and food_item.gram_equivalent > 0) \
-                else (food_item.default_quantity or 1.0)
-            conversion_to_grams = MASS_UNIT_TO_GRAMS[user_unit_lower]
-            logged_grams = user_quantity * conversion_to_grams
-            factor = logged_grams / base_grams
+            # Path 1 — explicit mass or volume unit (g, kg, ml, l)
+            logged_grams = user_quantity * MASS_UNIT_TO_GRAMS[user_unit_lower]
+            factor = (logged_grams / base_grams) * portion_multiplier
+
+        elif user_unit_lower in SERVING_UNIT_TO_GRAMS:
+            # Path 2 — household/serving unit (cup, glass, bowl, tbsp, etc.)
+            # Each unit has its own gram weight, so Glass and Cup produce different results.
+            unit_grams = SERVING_UNIT_TO_GRAMS[user_unit_lower]
+            logged_grams = user_quantity * unit_grams
+            factor = (logged_grams / base_grams) * portion_multiplier
+
         else:
-            factor = user_quantity
+            # Path 3 — unknown unit (e.g. "Other", custom serving)
+            # Treat user_quantity as a plain serving multiplier relative to gram_equivalent.
+            factor = user_quantity * portion_multiplier
 
         def calc(value):
             return round(value * factor, 2) if value is not None else None
