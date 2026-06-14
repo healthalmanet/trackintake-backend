@@ -329,6 +329,7 @@ class UserMealViewSet(viewsets.ModelViewSet):
                 user=request.user, food_item=food,
                 food_name=food_name,
                 quantity=quantity, unit=unit,
+                portion_size=item_data.get("portion_size", "Medium"),
                 meal_type=item_data.get("meal_type", "breakfast"),
                 remarks=item_data.get("remarks", ""),
                 consumed_at=consumed_at, date=date
@@ -394,6 +395,7 @@ class UserMealViewSet(viewsets.ModelViewSet):
                 
                 instance.quantity = float(data.get("quantity", instance.quantity))
                 instance.unit = data.get("unit", instance.unit)
+                instance.portion_size = data.get("portion_size", instance.portion_size)
                 instance.meal_type = data.get("meal_type", instance.meal_type)
                 instance.remarks = data.get("remarks", instance.remarks)
                 
