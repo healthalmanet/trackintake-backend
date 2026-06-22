@@ -28,7 +28,7 @@ from utils.pagination import StandardResultsSetPagination
 from utils.gemini import fetch_nutrition_from_gemini, GeminiUnavailableError
 from utils.utils import get_target_nutrients, send_email_notification_CALORIE, send_sms_notification
 
-from .serializers import UserMealSerializer
+from .serializers import UserMealSerializer, UserMealWithAttributesSerializer
 
 from .models import UserMeal, FoodItem, Allergen, FoodType, MealType
 from userProfile.models import UserProfile
@@ -247,7 +247,7 @@ FUZZY_MATCH_THRESHOLD = 0.9
 
 
 class UserMealViewSet(viewsets.ModelViewSet):
-    serializer_class = UserMealSerializer
+    serializer_class = UserMealWithAttributesSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
