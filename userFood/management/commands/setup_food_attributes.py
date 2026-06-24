@@ -90,6 +90,132 @@ class Command(BaseCommand):
                         'multiplier': 1.35},
                 ]
             },
+            'Pizza Size': {
+                'description': 'Size of pizza',
+                'options': [
+                    {'value': 'Personal', 'display_name': 'Personal', 'multiplier': 0.7},
+                    {'value': 'Small', 'display_name': 'Small', 'multiplier': 1.0},
+                    {'value': 'Medium', 'display_name': 'Medium', 'multiplier': 1.5},
+                    {'value': 'Large', 'display_name': 'Large', 'multiplier': 2.0},
+                ]
+            },
+            'Cheese Option': {
+                'description': 'Cheese preference',
+                'options': [
+                    {'value': 'No Cheese', 'display_name': 'No Cheese',
+                        'multiplier': 1.0},
+                    {'value': 'Regular Cheese',
+                        'display_name': 'Regular Cheese', 'multiplier': 1.1},
+                    {'value': 'Extra Cheese',
+                        'display_name': 'Extra Cheese', 'multiplier': 1.2},
+                ]
+            },
+            'Pizza Type': {
+                'description': 'Type of pizza',
+                'options': [
+                    {
+                        'value': 'Margherita',
+                        'display_name': 'Margherita',
+                        'multiplier': 1.0
+                    },
+                    {
+                        'value': 'Farmhouse',
+                        'display_name': 'Farmhouse',
+                        'multiplier': 1.15
+                    },
+                    {
+                        'value': 'Paneer',
+                        'display_name': 'Paneer',
+                        'multiplier': 1.2
+                    },
+                    {
+                        'value': 'Veggie',
+                        'display_name': 'Veggie',
+                        'multiplier': 1.1
+                    },
+                    {
+                        'value': 'Chicken',
+                        'display_name': 'Chicken',
+                        'multiplier': 1.3
+                    }
+                ]
+            },
+            'Toppings': {
+                'description': 'Additional pizza toppings',
+                'options': [
+                    {
+                        'value': 'Onion',
+                        'display_name': 'Onion',
+                        'multiplier': 1.02
+                    },
+                    {
+                        'value': 'Capsicum',
+                        'display_name': 'Capsicum',
+                        'multiplier': 1.02
+                    },
+                    {
+                        'value': 'Corn',
+                        'display_name': 'Corn',
+                        'multiplier': 1.05
+                    },
+                    {
+                        'value': 'Mushroom',
+                        'display_name': 'Mushroom',
+                        'multiplier': 1.04
+                    },
+                    {
+                        'value': 'Paneer',
+                        'display_name': 'Paneer',
+                        'multiplier': 1.10
+                    },
+                    {
+                        'value': 'Olives',
+                        'display_name': 'Olives',
+                        'multiplier': 1.03
+                    }
+                ]
+            },
+            'Burger Type': {
+                'description': 'Type of burger',
+                'options': [
+                    {'value': 'Veg', 'display_name': 'Veg Burger', 'multiplier': 1.0},
+                    {'value': 'Aloo Tikki',
+                        'display_name': 'Aloo Tikki Burger', 'multiplier': 1.05},
+                    {'value': 'Paneer', 'display_name': 'Paneer Burger',
+                        'multiplier': 1.2},
+                    {'value': 'Chicken', 'display_name': 'Chicken Burger',
+                        'multiplier': 1.3},
+                    {'value': 'Fish', 'display_name': 'Fish Burger', 'multiplier': 1.25},
+                ]
+            },
+            'Burger Size': {
+                'description': 'Size of burger',
+                'options': [
+                    {'value': 'Regular', 'display_name': 'Regular', 'multiplier': 1.0},
+                    {'value': 'Large', 'display_name': 'Large', 'multiplier': 1.5},
+                ]
+            },
+
+            'Burger Add-ons': {
+                'description': 'Additional burger add-ons',
+                'options': [
+                    {'value': 'None', 'display_name': 'None', 'multiplier': 1.0},
+                    {'value': 'Mayo', 'display_name': 'Extra Mayo', 'multiplier': 1.05},
+                    {'value': 'Extra Sauce',
+                        'display_name': 'Extra Sauce', 'multiplier': 1.05},
+                    {'value': 'Extra Patty',
+                        'display_name': 'Extra Patty', 'multiplier': 1.5},
+                ]
+            },
+            'Patty Count': {
+                'description': 'Number of patties',
+                'options': [
+                    {'value': 'Single', 'display_name': 'Single Patty',
+                        'multiplier': 1.0},
+                    {'value': 'Double', 'display_name': 'Double Patty',
+                        'multiplier': 1.8},
+                ]
+            },
             'Cooking Style': {
                 'description': 'How the rice is cooked',
                 'options': [
@@ -101,6 +227,164 @@ class Command(BaseCommand):
                         'multiplier': 0.98},
                     {'value': 'Parboiled', 'display_name': 'Parboiled Rice',
                         'multiplier': 1.02},
+                ]
+            },
+            'Rice Type': {
+                'description': 'Type of rice preparation',
+                'options': [
+                    {'value': 'Plain Rice',
+                        'display_name': 'Plain Rice', 'multiplier': 1.0},
+                    {'value': 'Jeera Rice',
+                        'display_name': 'Jeera Rice', 'multiplier': 1.1},
+                    {'value': 'Veg Pulao', 'display_name': 'Veg Pulao',
+                        'multiplier': 1.25},
+                    {'value': 'Chicken Biryani',
+                     'display_name': 'Chicken Biryani', 'multiplier': 1.6},
+                    {'value': 'Veg Biryani',
+                        'display_name': 'Veg Biryani', 'multiplier': 1.4},
+                ]
+            },
+            'Portion Size': {
+                'description': 'Serving size',
+                'options': [
+                    {'value': 'Small', 'display_name': 'Small', 'multiplier': 0.75},
+                    {'value': 'Medium', 'display_name': 'Medium', 'multiplier': 1.0},
+                    {'value': 'Large', 'display_name': 'Large', 'multiplier': 1.5},
+                ]
+            },
+            'Biryani Type': {
+                'description': 'Type of biryani',
+                'options': [
+                    {'value': 'Veg', 'display_name': 'Veg Biryani', 'multiplier': 1.0},
+                    {'value': 'Paneer', 'display_name': 'Paneer Biryani',
+                        'multiplier': 1.1},
+                    {'value': 'Egg', 'display_name': 'Egg Biryani', 'multiplier': 1.15},
+                    {'value': 'Chicken', 'display_name': 'Chicken Biryani',
+                        'multiplier': 1.25},
+                    {'value': 'Mutton', 'display_name': 'Mutton Biryani',
+                        'multiplier': 1.4},
+                ]
+            },
+            'Spice Level': {
+                'description': 'Spice level of biryani',
+                'options': [
+                    {'value': 'Mild', 'display_name': 'Mild', 'multiplier': 1.0},
+                    {'value': 'Medium', 'display_name': 'Medium', 'multiplier': 1.02},
+                    {'value': 'Spicy', 'display_name': 'Spicy', 'multiplier': 1.05},
+                ]
+            },
+            'Paratha Type': {
+                'description': 'Type of paratha',
+                'options': [
+                    {'value': 'Plain', 'display_name': 'Plain Paratha',
+                        'multiplier': 1.0},
+                    {'value': 'Aloo', 'display_name': 'Aloo Paratha', 'multiplier': 1.2},
+                    {'value': 'Gobhi', 'display_name': 'Gobhi Paratha',
+                        'multiplier': 1.15},
+                    {'value': 'Paneer', 'display_name': 'Paneer Paratha',
+                        'multiplier': 1.3},
+                ]
+            },
+            'Ghee Level': {
+                'description': 'Amount of ghee/butter',
+                'options': [
+                    {'value': 'None', 'display_name': 'No Ghee', 'multiplier': 0.9},
+                    {'value': 'Regular', 'display_name': 'Regular Ghee',
+                        'multiplier': 1.0},
+                    {'value': 'Extra', 'display_name': 'Extra Ghee', 'multiplier': 1.2},
+                ]
+            },
+            'Dosa Type': {
+                'description': 'Type of dosa',
+                'options': [
+                    {'value': 'Plain', 'display_name': 'Plain Dosa', 'multiplier': 1.0},
+                    {'value': 'Masala', 'display_name': 'Masala Dosa',
+                        'multiplier': 1.4},
+                    {'value': 'Rava', 'display_name': 'Rava Dosa', 'multiplier': 1.15},
+                    {'value': 'Mysore', 'display_name': 'Mysore Dosa',
+                        'multiplier': 1.5},
+                ]
+            },
+            'Idli Type': {
+                'description': 'Type of idli',
+                'options': [
+                    {'value': 'Plain', 'display_name': 'Plain Idli', 'multiplier': 1.0},
+                    {'value': 'Rava', 'display_name': 'Rava Idli', 'multiplier': 1.15},
+                ]
+            },
+            'Momos Type': {
+                'description': 'Type of momos',
+                'options': [
+                    {'value': 'Veg', 'display_name': 'Veg Momos', 'multiplier': 1.0},
+                    {'value': 'Paneer', 'display_name': 'Paneer Momos',
+                        'multiplier': 1.15},
+                    {'value': 'Chicken', 'display_name': 'Chicken Momos',
+                        'multiplier': 1.25},
+                ]
+            },
+            'Preparation Type': {
+                'description': 'Cooking style',
+                'options': [
+                    {'value': 'Steamed', 'display_name': 'Steamed', 'multiplier': 1.0},
+                    {'value': 'Fried', 'display_name': 'Fried', 'multiplier': 1.4},
+                ]
+            },
+            'Tea Type': {
+                'description': 'Type of tea',
+                'options': [
+                    {'value': 'Milk Tea', 'display_name': 'Milk Tea', 'multiplier': 1.0},
+                    {'value': 'Black Tea', 'display_name': 'Black Tea',
+                        'multiplier': 0.3},
+                    {'value': 'Green Tea', 'display_name': 'Green Tea',
+                        'multiplier': 0.1},
+                ]
+            },
+            'Sugar Level': {
+                'description': 'Sugar added',
+                'options': [
+                    {'value': 'No Sugar', 'display_name': 'No Sugar', 'multiplier': 0.8},
+                    {'value': '1 Tsp', 'display_name': '1 Tsp Sugar', 'multiplier': 1.0},
+                    {'value': '2 Tsp', 'display_name': '2 Tsp Sugar',
+                        'multiplier': 1.25},
+                ]
+            },
+            'Coffee Type': {
+                'description': 'Type of coffee',
+                'options': [
+                    {'value': 'Black', 'display_name': 'Black Coffee',
+                        'multiplier': 0.2},
+                    {'value': 'Milk', 'display_name': 'Milk Coffee', 'multiplier': 1.0},
+                    {'value': 'Cold', 'display_name': 'Cold Coffee', 'multiplier': 1.6},
+                ]
+            },
+            'Juice Type': {
+                'description': 'Type of juice',
+                'options': [
+                    {'value': 'Orange', 'display_name': 'Orange Juice',
+                        'multiplier': 1.0},
+                    {'value': 'Apple', 'display_name': 'Apple Juice',
+                        'multiplier': 1.05},
+                    {'value': 'Mango', 'display_name': 'Mango Juice', 'multiplier': 1.3},
+                    {'value': 'Mixed Fruit',
+                        'display_name': 'Mixed Fruit Juice', 'multiplier': 1.15},
+                ]
+            },
+            'Sugar Added': {
+                'description': 'Added sugar',
+                'options': [
+                    {'value': 'No', 'display_name': 'No Added Sugar', 'multiplier': 1.0},
+                    {'value': 'Yes', 'display_name': 'Added Sugar', 'multiplier': 1.25},
+                ]
+            },
+            'Ice Cream Type': {
+                'description': 'Flavor',
+                'options': [
+                    {'value': 'Vanilla', 'display_name': 'Vanilla', 'multiplier': 1.0},
+                    {'value': 'Chocolate', 'display_name': 'Chocolate',
+                        'multiplier': 1.1},
+                    {'value': 'Butterscotch',
+                        'display_name': 'Butterscotch', 'multiplier': 1.15},
+                    {'value': 'Kulfi', 'display_name': 'Kulfi', 'multiplier': 1.2},
                 ]
             },
         }
