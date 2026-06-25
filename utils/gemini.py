@@ -1,18 +1,20 @@
+import dotenv
+from userFood.models import FoodItem, FoodType, MealType, Allergen, LEVEL_CHOICES
+from google import genai
+from django.db import transaction
 import json
 import traceback
 import time
 import logging
 import os
 from pathlib import Path
+from userFood.services.attribute_matcher import link_food_attributes
 
 
 class GeminiUnavailableError(Exception):
     """Raised when Gemini returns a transient error (503, 429, network timeout)."""
     pass
 
-import dotenv
-from django.db import transaction
-from google import genai
 
 # Load .env BEFORE anything else
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -27,11 +29,10 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 logger = logging.getLogger(__name__)
 
 # Import Django models AFTER env is loaded
-from userFood.models import FoodItem, FoodType, MealType, Allergen, LEVEL_CHOICES
-
 
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+
 
 def get_nullable_float(data: dict, key: str):
     """
@@ -45,8 +46,6 @@ def get_nullable_float(data: dict, key: str):
         return float(value)
     except (ValueError, TypeError):
         return None
-
-
 
 
 @transaction.atomic
@@ -106,7 +105,8 @@ Now return the same JSON structure with correct values for: "{food_query}"
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
-            config={"temperature": 0.0, "response_mime_type": "application/json"},
+            config={"temperature": 0.0,
+                    "response_mime_type": "application/json"},
         )
 
         data = json.loads(response.text)
@@ -154,44 +154,55 @@ Now return the same JSON structure with correct values for: "{food_query}"
             'vitamin_d_mcg':    require_float(item_data, 'vitamin_d_mcg'),
             'vitamin_b12_mcg':  require_float(item_data, 'vitamin_b12_mcg'),
             'fodmap_level':     (item_data.get('fodmap_level') or 'Low').title(),
-            'spice_level':      (item_data.get('spice_level')  or 'Low').title(),
+            'spice_level':      (item_data.get('spice_level') or 'Low').title(),
             'purine_level':     (item_data.get('purine_level') or 'Low').title(),
             'is_verified':      False,
         }
 
         # Use name (case-insensitive get, then create/update by exact name)
-        existing = FoodItem.objects.filter(name__iexact=standardized_name).first()
+        existing = FoodItem.objects.filter(
+            name__iexact=standardized_name).first()
         if existing:
             for attr, val in food_item_defaults.items():
                 setattr(existing, attr, val)
             existing.save()
+            link_food_attributes(existing)
             food_item_obj = existing
             created = False
         else:
-            food_item_obj = FoodItem.objects.create(name=standardized_name, **food_item_defaults)
+            food_item_obj = FoodItem.objects.create(
+                name=standardized_name, **food_item_defaults)
+            link_food_attributes(food_item_obj)
             created = True
 
         print(f"{'Created' if created else 'Updated'} FoodItem '{food_item_obj.name}': "
               f"cal={food_item_obj.calories} p={food_item_obj.protein} "
               f"c={food_item_obj.carbs} f={food_item_obj.fats}")
 
-        food_types = [FoodType.objects.get_or_create(name=n.strip())[0] for n in data.get('food_types', [])]
-        meal_types = [MealType.objects.get_or_create(name=n.strip())[0] for n in data.get('meal_types', [])]
-        allergens  = [Allergen.objects.get_or_create(name=n.strip())[0] for n in data.get('allergens', []) if n.lower().strip() not in ('none', '')]
+        food_types = [FoodType.objects.get_or_create(
+            name=n.strip())[0] for n in data.get('food_types', [])]
+        meal_types = [MealType.objects.get_or_create(
+            name=n.strip())[0] for n in data.get('meal_types', [])]
+        allergens = [Allergen.objects.get_or_create(name=n.strip())[0] for n in data.get(
+            'allergens', []) if n.lower().strip() not in ('none', '')]
         food_item_obj.food_types.set(food_types)
         food_item_obj.meal_types.set(meal_types)
         food_item_obj.allergens.set(allergens)
         return food_item_obj
 
     except json.JSONDecodeError:
-        print(f"❌ Gemini JSON Decode Error for '{food_query}'. Raw text:\n{response.text}")
-        raise ValueError(f"Could not parse nutrition data from AI. Invalid JSON.")
+        print(
+            f"❌ Gemini JSON Decode Error for '{food_query}'. Raw text:\n{response.text}")
+        raise ValueError(
+            f"Could not parse nutrition data from AI. Invalid JSON.")
     except Exception as e:
         err_str = str(e).lower()
         if any(code in err_str for code in ("503", "unavailable", "429", "resource_exhausted", "timeout", "deadline")):
-            raise GeminiUnavailableError(f"Gemini temporarily unavailable for '{food_query}': {e}")
+            raise GeminiUnavailableError(
+                f"Gemini temporarily unavailable for '{food_query}': {e}")
         traceback.print_exc()
-        raise ValueError(f"An API or database error occurred for '{food_query}': {e}")
+        raise ValueError(
+            f"An API or database error occurred for '{food_query}': {e}")
 
 
 # Helper function (place in a utils.py file or above the main function)
@@ -281,7 +292,8 @@ JSON Structure (Reflecting the parsed query):
 }}
 """
     try:
-        print(f"🔄 Querying Gemini with natural language query: '{food_query}'...")
+        print(
+            f"🔄 Querying Gemini with natural language query: '{food_query}'...")
         start_time = time.time()
 
         response = client.models.generate_content(
@@ -294,17 +306,18 @@ JSON Structure (Reflecting the parsed query):
         )
 
         elapsed_time = time.time() - start_time
-        logger.warning(f"⏱️ Gemini response time (nutrition): {elapsed_time:.2f}s | food='{food_query}'")
-
+        logger.warning(
+            f"⏱️ Gemini response time (nutrition): {elapsed_time:.2f}s | food='{food_query}'")
 
         data = json.loads(response.text)
         item_data = data.get("food_item")
         if not item_data:
-            raise ValueError("JSON response from Gemini missing 'food_item' object.")
+            raise ValueError(
+                "JSON response from Gemini missing 'food_item' object.")
 
         # Use the standardized name from Gemini; this is the key for our database entry.
         standardized_name = item_data.get('name', food_query).strip()
-        if not standardized_name: # Ensure the name is not empty
+        if not standardized_name:  # Ensure the name is not empty
             raise ValueError("Gemini response provided an empty food name.")
 
         # Build the defaults dictionary. This robustly handles the parsed data from Gemini.
@@ -315,7 +328,7 @@ JSON Structure (Reflecting the parsed query):
             'default_quantity': get_nullable_float2(item_data, 'default_quantity') or 1.0,
             'default_unit': item_data.get('default_unit') or 'serving',
             'gram_equivalent': get_nullable_float2(item_data, 'gram_equivalent') or 0.0,
-            
+
             # Nutritional data
             'calories': get_nullable_float2(item_data, 'calories') or 0.0,
             'protein': get_nullable_float2(item_data, 'protein') or 0.0,
@@ -339,12 +352,12 @@ JSON Structure (Reflecting the parsed query):
             'omega_3_g': get_nullable_float2(item_data, 'omega_3_g') or 0.0,
             'vitamin_d_mcg': get_nullable_float2(item_data, 'vitamin_d_mcg') or 0.0,
             'vitamin_b12_mcg': get_nullable_float2(item_data, 'vitamin_b12_mcg') or 0.0,
-            
+
             # Categorical data
             'fodmap_level': (item_data.get('fodmap_level') or 'Low').title(),
             'spice_level': (item_data.get('spice_level') or 'Low').title(),
             'purine_level': (item_data.get('purine_level') or 'Low').title(),
-            'is_verified': False, # New items from AI are always unverified
+            'is_verified': False,  # New items from AI are always unverified
         }
 
         # The `update_or_create` will find a food by its standardized name (e.g., "Roti")
@@ -353,28 +366,35 @@ JSON Structure (Reflecting the parsed query):
             name__iexact=standardized_name,
             defaults={'name': standardized_name, **food_item_defaults}
         )
-        
+        link_food_attributes(food_item_obj)
+
         log_prefix = "✅ Created" if created else "✅ Updated"
         print(f"{log_prefix} food item '{food_item_obj.name}' with data for {food_item_obj.default_quantity} {food_item_obj.default_unit}.")
 
         # Handle M2M relationships (this logic remains correct)
-        food_types = [FoodType.objects.get_or_create(name=name.strip())[0] for name in data.get('food_types', [])]
-        meal_types = [MealType.objects.get_or_create(name=name.strip())[0] for name in data.get('meal_types', [])]
-        allergens = [Allergen.objects.get_or_create(name=name.strip())[0] for name in data.get('allergens', []) if name.lower().strip() not in ('none', '')]
-        
+        food_types = [FoodType.objects.get_or_create(
+            name=name.strip())[0] for name in data.get('food_types', [])]
+        meal_types = [MealType.objects.get_or_create(
+            name=name.strip())[0] for name in data.get('meal_types', [])]
+        allergens = [Allergen.objects.get_or_create(name=name.strip())[0] for name in data.get(
+            'allergens', []) if name.lower().strip() not in ('none', '')]
+
         food_item_obj.food_types.set(food_types)
         food_item_obj.meal_types.set(meal_types)
         food_item_obj.allergens.set(allergens)
-        
+
         return food_item_obj
 
     except json.JSONDecodeError:
-        print(f"❌ Gemini JSON Decode Error for '{food_query}'. Raw text:\n{response.text}")
-        raise ValueError(f"Could not parse nutrition data from AI. Invalid JSON.")
+        print(
+            f"❌ Gemini JSON Decode Error for '{food_query}'. Raw text:\n{response.text}")
+        raise ValueError(
+            f"Could not parse nutrition data from AI. Invalid JSON.")
     except Exception as e:
         traceback.print_exc()
-        raise ValueError(f"An API or database error occurred for '{food_query}': {e}")
-    
+        raise ValueError(
+            f"An API or database error occurred for '{food_query}': {e}")
+
 
 # ================================================================
 # APPEND THIS ENTIRE BLOCK to the bottom of your utils/gemini.py
@@ -390,9 +410,9 @@ def suggest_foods_gemini(remaining_nutrients: dict, user_profile, meal_type: str
     import json as _json
     from userFood.models import FoodItem, FoodType, MealType, Allergen
 
-    diet_type   = getattr(user_profile, "diet_type",   "Any")   or "Any"
-    country     = getattr(user_profile, "country",     "India") or "India"
-    allergies   = getattr(user_profile, "allergies",   "None")  or "None"
+    diet_type = getattr(user_profile, "diet_type",   "Any") or "Any"
+    country = getattr(user_profile, "country",     "India") or "India"
+    allergies = getattr(user_profile, "allergies",   "None") or "None"
     is_diabetic = bool(getattr(user_profile, "is_diabetic", False))
 
     meal_hint = f"for {meal_type}" if meal_type else "for any meal"
@@ -482,10 +502,10 @@ Each object must use these exact keys:
                 "default_quantity":  get_nullable_float(item, "default_quantity") or 1.0,
                 "default_unit":      item.get("default_unit") or "serving",
                 "gram_equivalent":   get_nullable_float(item, "gram_equivalent"),
-                "calories":          get_nullable_float(item, "calories")        or 0.0,
-                "protein":           get_nullable_float(item, "protein")         or 0.0,
-                "carbs":             get_nullable_float(item, "carbs")           or 0.0,
-                "fats":              get_nullable_float(item, "fats")            or 0.0,
+                "calories":          get_nullable_float(item, "calories") or 0.0,
+                "protein":           get_nullable_float(item, "protein") or 0.0,
+                "carbs":             get_nullable_float(item, "carbs") or 0.0,
+                "fats":              get_nullable_float(item, "fats") or 0.0,
                 "fiber":             get_nullable_float(item, "fiber"),
                 "sugar":             get_nullable_float(item, "sugar"),
                 "saturated_fat_g":   get_nullable_float(item, "saturated_fat_g"),
@@ -505,7 +525,7 @@ Each object must use these exact keys:
                 "vitamin_d_mcg":     get_nullable_float(item, "vitamin_d_mcg"),
                 "vitamin_b12_mcg":   get_nullable_float(item, "vitamin_b12_mcg"),
                 "fodmap_level":      (item.get("fodmap_level") or "Low").title(),
-                "spice_level":       (item.get("spice_level")  or "Low").title(),
+                "spice_level":       (item.get("spice_level") or "Low").title(),
                 "purine_level":      (item.get("purine_level") or "Low").title(),
                 "is_verified":       False,
             }
@@ -514,6 +534,7 @@ Each object must use these exact keys:
                 name__iexact=name,
                 defaults={"name": name, **defaults},
             )
+            link_food_attributes(food_obj)
 
             # M2M
             ft_objs = [FoodType.objects.get_or_create(name=n.strip())[0]
@@ -524,9 +545,12 @@ Each object must use these exact keys:
                        for n in item.get("allergens", [])
                        if n.strip().lower() not in ("none", "")]
 
-            if ft_objs: food_obj.food_types.set(ft_objs)
-            if mt_objs: food_obj.meal_types.set(mt_objs)
-            if al_objs: food_obj.allergens.set(al_objs)
+            if ft_objs:
+                food_obj.food_types.set(ft_objs)
+            if mt_objs:
+                food_obj.meal_types.set(mt_objs)
+            if al_objs:
+                food_obj.allergens.set(al_objs)
 
             food_objects.append(food_obj)
 

@@ -13,6 +13,7 @@ from django.db import transaction
 from userFood.models import (
     FoodItem, FoodAttribute, FoodAttributeOption, FoodItemAttribute
 )
+from userFood.services.attribute_matcher import FOOD_LINKS
 
 
 class Command(BaseCommand):
@@ -421,30 +422,7 @@ class Command(BaseCommand):
             created_attrs[attr_name] = attr
 
         # ========== LINK ATTRIBUTES TO FOODS ==========
-        food_links = {
-            'Chapati': [
-                ('Flour Type', 1, True),
-                ('Size', 2, True),
-            ],
-            'Roti': [
-                ('Flour Type', 1, True),
-                ('Size', 2, True),
-            ],
-            'Milk': [
-                ('Fat Type', 1, True),
-            ],
-            'Rice': [
-                ('Size', 1, False),
-                ('Cooking Style', 2, False),
-            ],
-            'Tea': [
-                ('Sugar Level', 1, False),
-            ],
-            'Pizza': [
-                ('Size', 1, True),
-                ('Crust Type', 2, True),
-            ],
-        }
+        food_links = food_links = FOOD_LINKS
 
         self.stdout.write('\n📦 Linking attributes to foods...')
 
