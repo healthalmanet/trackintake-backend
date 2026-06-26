@@ -26,6 +26,9 @@ FOOD_LINKS = {
     'Pizza': [
         ('Size', 1, True),
         ('Crust Type', 2, True),
+        ('Pizza Type', 3, True),
+        ('Cheese Level', 4, False),
+        ('Toppings', 5, False),
     ],
     'Burger': [
         ('Burger Type', 1, True),
@@ -36,6 +39,7 @@ FOOD_LINKS = {
     'Paratha': [
         ('Paratha Type', 1, True),
         ('Ghee Level', 2, False),
+        ('Portion Size', 3, True),
     ],
     'Dosa': [
         ('Dosa Type', 1, True),
@@ -68,16 +72,16 @@ def link_food_attributes(food_item):
     matched = None
 
     for key in FOOD_LINKS.keys():
-       normalized_key = key.lower().strip()
+        normalized_key = key.lower().strip()
 
-       if (
-           normalized_key == food_name
-           or food_name.startswith(normalized_key)
-           or normalized_key in food_name.split()
-           or normalized_key in food_name
+        if (
+            normalized_key == food_name
+            or food_name.startswith(normalized_key)
+            or normalized_key in food_name.split()
+            or normalized_key in food_name
         ):
-           matched = key
-           break
+            matched = key
+            break
 
     if not matched:
         return
