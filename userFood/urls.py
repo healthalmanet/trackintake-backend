@@ -12,7 +12,9 @@ from userFood.views_attributes import (
 
 from rest_framework.routers import DefaultRouter
 from .views import FoodSuggestionView
+from .urls_autocomplete import urlpatterns as autocomplete_urlpatterns
 
+# Autocomplete/search endpoints (DB-first; no Gemini during typing)
 router = DefaultRouter()
 router.register(r'logmeals', UserMealViewSet, basename='user-meals')
 router.register(r'logmeals_with_attributes',
@@ -48,3 +50,4 @@ urlpatterns = [
     # Food suggestions
     path("suggest-foods/", FoodSuggestionView.as_view(), name="suggest-foods"),
 ]
+urlpatterns += autocomplete_urlpatterns

@@ -10,6 +10,10 @@ import os
 from pathlib import Path
 from userFood.services.attribute_matcher import link_food_attributes
 
+# === Changes made by Ananya (Start) ===
+from userFood.gemini_attributes import apply_gemini_attributes_to_food_if_missing
+# === Changes made by Ananya (End) ===
+
 
 class GeminiUnavailableError(Exception):
     """Raised when Gemini returns a transient error (503, 429, network timeout)."""
@@ -55,11 +59,29 @@ def fetch_nutrition_from_gemini(food_name: str, quantity: float, unit: str) -> F
     prompt = f"""
 Return nutrition data for: "{food_query}"
 
+
 Rules:
 - Match the exact serving size specified.
 - Use reliable nutrition data (USDA-style).
 - Every numeric field MUST be a JSON number (e.g. 320.5), never a string, never null, never a placeholder.
 - Output valid JSON only, no extra text.
+# === Changes made by Ananya (Start) ===
+You MUST preserve ALL existing response fields exactly as before.
+
+Backwards compatible extension:
+- Add an OPTIONAL top-level field "attributes".
+- "attributes" must be an array of objects of the form:
+  {{
+    "name": <string>,
+    "required": <boolean>,
+    "options": [
+      {{"value": <string>, "nutrition_multiplier": <number>}},
+      ...
+    ]
+  }}
+- If you truly cannot infer any meaningful attributes, set "attributes" to [] OR omit it.
+- Attributes inference must be dynamic (no hardcoding food-specific templates).
+- Infer attributes that can affect serving size, ingredients, preparation, or nutrition.
 
 {{
   "source_url": "",
@@ -84,7 +106,7 @@ Rules:
     "calcium_mg": 310,
     "iodine_mcg": 0,
     "zinc_mg": 1.8,
-    "magnesium_mg": 28,
+    "magnesium_mcg": 28,
     "selenium_mcg": 12,
     "cholesterol_mg": 55,
     "omega_3_g": 0.1,
@@ -96,7 +118,19 @@ Rules:
   }},
   "food_types": ["Non-Vegetarian"],
   "meal_types": ["Lunch", "Dinner"],
-  "allergens": ["Gluten", "Dairy"]
+  "allergens": ["Gluten", "Dairy"],
+
+  "attributes": [
+    {{
+      "name": "Size",
+      "required": true,
+      "options": [
+        {{"value": "Small", "nutrition_multiplier": 0.8}},
+        {{"value": "Medium", "nutrition_multiplier": 1.0}},
+        {{"value": "Large", "nutrition_multiplier": 1.3}}
+      ]
+    }}
+  ]
 }}
 
 Now return the same JSON structure with correct values for: "{food_query}"
@@ -163,16 +197,39 @@ Now return the same JSON structure with correct values for: "{food_query}"
         existing = FoodItem.objects.filter(
             name__iexact=standardized_name).first()
         if existing:
+            # === Changes made by Ananya (Start) ===
+            # 1) known-food attributes via attribute_matcher.py
+            # 2) AI-generated attributes for foods not already linked by matcher
+            # (Only applied if FoodItem has no existing attributes; no overwrite.)
+            # === Changes made by Ananya (End) ===
+
             for attr, val in food_item_defaults.items():
                 setattr(existing, attr, val)
             existing.save()
+        # === Changes made by Ananya (Start) ===
+        # 1) known-food attributes via attribute_matcher.py
             link_food_attributes(existing)
+        # 2) AI-generated attributes for foods not already linked by matcher
+            try:
+                apply_gemini_attributes_to_food_if_missing(existing, data)
+            except Exception:
+                logger.exception(
+                    "AI attribute application failed (existing FoodItem).")
+        # === Changes made by Ananya (End) ===
+
             food_item_obj = existing
             created = False
         else:
             food_item_obj = FoodItem.objects.create(
-                name=standardized_name, **food_item_defaults)
+                name=standardized_name,
+                **food_item_defaults
+            )
             link_food_attributes(food_item_obj)
+            try:
+               apply_gemini_attributes_to_food_if_missing(food_item_obj, data)
+            except Exception:
+                logger.exception("AI attribute application failed (new FoodItem).")
+
             created = True
 
         print(f"{'Created' if created else 'Updated'} FoodItem '{food_item_obj.name}': "
