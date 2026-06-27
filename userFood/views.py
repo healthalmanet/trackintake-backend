@@ -22,6 +22,9 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.decorators import api_view, permission_classes
 from django.utils.timezone import make_aware
 
+from django.db.models import Q
+
+
 
 
 from utils.pagination import StandardResultsSetPagination
