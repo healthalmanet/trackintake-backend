@@ -1,3 +1,23 @@
+from subscriptions.utils import require_plan_feature
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from userProfile.models import UserProfile
+from .models import UserMeal, FoodItem, Allergen, FoodType, MealType
+from .serializers import UserMealSerializer, UserMealWithAttributesSerializer
+from utils.utils import get_target_nutrients, send_email_notification_CALORIE, send_sms_notification
+from utils.gemini import fetch_nutrition_from_gemini, GeminiUnavailableError
+from utils.pagination import StandardResultsSetPagination
+from django.db.models import Q
+from django.utils.timezone import make_aware
+from rest_framework.decorators import api_view, permission_classes
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from fuzzywuzzy import process
+from django.core.exceptions import ValidationError
+from rest_framework import viewsets, status, filters
+from django.shortcuts import get_object_or_404
 import logging
 from datetime import date, timedelta, datetime, time
 from django.utils import timezone
@@ -10,34 +30,7 @@ import traceback
 from django.db.models import Sum
 
 logger = logging.getLogger(__name__)
-from django.shortcuts import get_object_or_404
-from rest_framework import viewsets, status, filters
-from django.core.exceptions import ValidationError
-from dateutil import parser
-from fuzzywuzzy import process
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.views import APIView
-from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.decorators import api_view, permission_classes
-from django.utils.timezone import make_aware
 
-from django.db.models import Q
-
-
-
-
-from utils.pagination import StandardResultsSetPagination
-from utils.gemini import fetch_nutrition_from_gemini, GeminiUnavailableError
-from utils.utils import get_target_nutrients, send_email_notification_CALORIE, send_sms_notification
-
-from .serializers import UserMealSerializer, UserMealWithAttributesSerializer
-
-from .models import UserMeal, FoodItem, Allergen, FoodType, MealType
-from userProfile.models import UserProfile
-from channels.layers import get_channel_layer
-from asgiref.sync import async_to_sync
-from subscriptions.utils import require_plan_feature
 
 # FUZZY_MATCH_THRESHOLD = 90
 
@@ -51,7 +44,7 @@ from subscriptions.utils import require_plan_feature
 #     filterset_fields = ['date', 'meal_type']
 
 #     def get_queryset(self):
-        
+
 #         return UserMeal.objects.filter(user=self.request.user).order_by('-consumed_at')
 
 #     def create(self, request, *args, **kwargs):
@@ -139,7 +132,7 @@ from subscriptions.utils import require_plan_feature
 #             messages = []
 #             if totals["total_calories"] >= recommended_calories:
 #                 messages.append("✅ You've reached your daily calorie target!")
-    
+
 
 #             if messages and request.user.email:
 #                 send_email_notification_CALORIE(
@@ -243,9 +236,6 @@ from subscriptions.utils import require_plan_feature
 #         }, status=status.HTTP_200_OK)
 
 
-
-
-
 FUZZY_MATCH_THRESHOLD = 0.9
 
 
@@ -277,20 +267,45 @@ class UserMealViewSet(viewsets.ModelViewSet):
         if food and (food.calories or 0) > 0:
             return food
 
-        # 2. Fuzzy match (multi-word names only) — same guard
+        # 2. Fuzzy match (multi-word names only) — same guard.
+        # If the Postgres trigram extension is unavailable, fall back to Python fuzzy matching.
         if len(original_food_name.split()) > 1:
-            food = FoodItem.objects.annotate(
-                similarity=TrigramSimilarity('name', original_food_name)
-            ).filter(similarity__gt=FUZZY_MATCH_THRESHOLD).order_by('-similarity').first()
-            if food and (food.calories or 0) > 0:
-                return food
+            try:
+                food = FoodItem.objects.annotate(
+                    similarity=TrigramSimilarity('name', original_food_name)
+                ).filter(similarity__gt=FUZZY_MATCH_THRESHOLD).order_by('-similarity').first()
+                if food and (food.calories or 0) > 0:
+                    return food
+            except Exception as exc:
+                logger.warning(
+                    "Postgres trigram search unavailable or failed for '%s': %s",
+                    original_food_name, str(exc)
+                )
+                all_names = list(
+                    FoodItem.objects.values_list("name", flat=True))
+                if all_names:
+                    match_result = process.extractOne(
+                        original_food_name, all_names)
+                    if match_result and match_result[1] >= int(FUZZY_MATCH_THRESHOLD * 100):
+                        matched_name = match_result[0]
+                        logger.info(
+                            "Python fuzzy match found '%s' for '%s' with score %s",
+                            matched_name, original_food_name, match_result[1]
+                        )
+                        food = FoodItem.objects.filter(
+                            name__iexact=matched_name).first()
+                        if food and (food.calories or 0) > 0:
+                            return food
 
         # 3. Gemini fallback to get a standardized food item
-        print(f"🔄 Fallback: Querying Gemini API for a profile of '{original_food_name}'...")
+        print(
+            f"🔄 Fallback: Querying Gemini API for a profile of '{original_food_name}'...")
         try:
-            gemini_food_item = fetch_nutrition_from_gemini(original_food_name, quantity, unit)
+            gemini_food_item = fetch_nutrition_from_gemini(
+                original_food_name, quantity, unit)
         except GeminiUnavailableError:
-            logger.warning(f"⚠️ Gemini unavailable for '{original_food_name}', saving placeholder FoodItem.")
+            logger.warning(
+                f"⚠️ Gemini unavailable for '{original_food_name}', saving placeholder FoodItem.")
             gemini_food_item, _ = FoodItem.objects.get_or_create(
                 name__iexact=original_food_name,
                 defaults={
@@ -303,13 +318,16 @@ class UserMealViewSet(viewsets.ModelViewSet):
             return gemini_food_item
 
         if not gemini_food_item:
-            raise ValueError(f"Could not find nutrition info for '{original_food_name}'")
+            raise ValueError(
+                f"Could not find nutrition info for '{original_food_name}'")
 
-        print(f"✅ Gemini resolved '{original_food_name}' → '{gemini_food_item.name}'.")
+        print(
+            f"✅ Gemini resolved '{original_food_name}' → '{gemini_food_item.name}'.")
         return gemini_food_item
 
     def create(self, request, *args, **kwargs):
-        require_plan_feature(self.request.user, "meal_log_allowed") 
+        require_plan_feature(self.request.user, "meal_log_allowed")
+
         def process_meal(item_data):
             food_name = item_data.get("food_name", "").strip()
             if not food_name:
@@ -317,17 +335,19 @@ class UserMealViewSet(viewsets.ModelViewSet):
 
             quantity = float(item_data.get("quantity", 1))
             unit = item_data.get("unit", "g")
-            
+
             food = self._find_or_create_food_item(food_name, quantity, unit)
 
             consumed_at_str = item_data.get("consumed_at")
             date_str = item_data.get("date")
             try:
-                consumed_at = parser.parse(consumed_at_str) if consumed_at_str else timezone.now()
-                date = parser.parse(date_str).date() if date_str else consumed_at.date()
+                consumed_at = parser.parse(
+                    consumed_at_str) if consumed_at_str else timezone.now()
+                date = parser.parse(date_str).date(
+                ) if date_str else consumed_at.date()
             except Exception as e:
                 raise ValueError(f"Invalid date/time format: {e}")
-            
+
             meal = UserMeal(
                 user=request.user, food_item=food,
                 food_name=food_name,
@@ -343,8 +363,9 @@ class UserMealViewSet(viewsets.ModelViewSet):
         try:
             payload = request.data
             with transaction.atomic():
-                meals = [process_meal(item) for item in payload] if isinstance(payload, list) else [process_meal(payload)]
-            
+                meals = [process_meal(item) for item in payload] if isinstance(
+                    payload, list) else [process_meal(payload)]
+
             serializer = self.get_serializer(meals, many=True)
             if not meals:
                 return Response({"message": "No meals to log."}, status=status.HTTP_400_BAD_REQUEST)
@@ -357,7 +378,8 @@ class UserMealViewSet(viewsets.ModelViewSet):
                 total_carbs=Sum('carbs'), total_fats=Sum('fats'),
                 total_sugar=Sum('sugar'), total_fiber=Sum('fiber'),
             )
-            totals = {k: float(v) if v is not None else 0 for k, v in totals.items()}
+            totals = {k: float(v) if v is not None else 0 for k,
+                      v in totals.items()}
             target_data = get_target_nutrients(request.user)
             recommended_calories = target_data.get("recommended_calories", 0)
             messages = []
@@ -365,8 +387,10 @@ class UserMealViewSet(viewsets.ModelViewSet):
                 messages.append("✅ You've reached your daily calorie target!")
             if messages and request.user.email:
                 send_email_notification_CALORIE(
-                    request.user.email, "🎉 Nutrition Target Met!", "\n".join(messages),
-                    totals.get("total_calories", 0), recommended_calories, str(target_date)
+                    request.user.email, "🎉 Nutrition Target Met!", "\n".join(
+                        messages),
+                    totals.get("total_calories", 0), recommended_calories, str(
+                        target_date)
                 )
 
             return Response({
@@ -392,18 +416,23 @@ class UserMealViewSet(viewsets.ModelViewSet):
             with transaction.atomic():
                 if "food_name" in data and data["food_name"].strip().lower() != (instance.food_item.name or "").lower():
                     instance.food_item = self._find_or_create_food_item(
-                        data["food_name"], float(data.get("quantity", instance.quantity)), data.get("unit", instance.unit)
+                        data["food_name"], float(data.get("quantity", instance.quantity)), data.get(
+                            "unit", instance.unit)
                     )
                     instance.food_name = data["food_name"].strip()
-                
-                instance.quantity = float(data.get("quantity", instance.quantity))
+
+                instance.quantity = float(
+                    data.get("quantity", instance.quantity))
                 instance.unit = data.get("unit", instance.unit)
-                instance.portion_size = data.get("portion_size", instance.portion_size)
+                instance.portion_size = data.get(
+                    "portion_size", instance.portion_size)
                 instance.meal_type = data.get("meal_type", instance.meal_type)
                 instance.remarks = data.get("remarks", instance.remarks)
-                
-                if "consumed_at" in data: instance.consumed_at = parser.parse(data["consumed_at"])
-                if "date" in data: instance.date = parser.parse(data["date"]).date()
+
+                if "consumed_at" in data:
+                    instance.consumed_at = parser.parse(data["consumed_at"])
+                if "date" in data:
+                    instance.date = parser.parse(data["date"]).date()
 
                 instance.save()
 
@@ -418,14 +447,8 @@ class UserMealViewSet(viewsets.ModelViewSet):
             return Response({"error": "An unexpected error occurred during the update."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-
-
-
-
-
-
-# RENAMED and REFACTORED for clarity and correct functionality 
-#7day
+# RENAMED and REFACTORED for clarity and correct functionality
+# 7day
 class DailyUserMealSummaryView(APIView):
     """
     Provides a 7-day summary of meals, ending on a specific date provided by the user.
@@ -445,14 +468,16 @@ class DailyUserMealSummaryView(APIView):
         try:
             # Parse the string from the client into a date object.
             end_date = parse_date(end_date_str)
-            if not end_date: raise ValueError # parse_date returns None on failure
+            if not end_date:
+                raise ValueError  # parse_date returns None on failure
 
             # Calculate the start date for the 7-day range.
             start_date = end_date - timedelta(days=6)
-            
+
             # Filter based on the user-specific date range.
             # Assumes your UserMeal model has a `date` field of type DateField.
-            meals = UserMeal.objects.filter(user=request.user, date__range=(start_date, end_date))
+            meals = UserMeal.objects.filter(
+                user=request.user, date__range=(start_date, end_date))
 
         except (ValueError, TypeError):
             return Response({"error": "Invalid date format for 'end_date'. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
@@ -487,9 +512,6 @@ class DailyUserMealSummaryView(APIView):
         return Response(response_data)
 
 
-
-
-
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def targetNutrients(request):
@@ -499,11 +521,13 @@ def targetNutrients(request):
     """
     try:
         current_date_str = request.query_params.get('current_date')
-        today = parse_date(current_date_str) if current_date_str else date.today()
+        today = parse_date(
+            current_date_str) if current_date_str else date.today()
 
         profile = UserProfile.objects.get(user=request.user)
         dob = profile.date_of_birth
-        age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+        age = today.year - dob.year - \
+            ((today.month, today.day) < (dob.month, dob.day))
 
         weight = profile.weight_kg
         height = profile.height_cm
@@ -512,7 +536,8 @@ def targetNutrients(request):
         goal = profile.goal
 
         # ✅ BMR Calculation (Mifflin-St Jeor)
-        bmr = 10 * weight + 6.25 * height - 5 * age + (5 if gender == "male" else -161)
+        bmr = 10 * weight + 6.25 * height - 5 * \
+            age + (5 if gender == "male" else -161)
 
         activity_multipliers = {
             "sedentary": 1.2,
@@ -523,7 +548,8 @@ def targetNutrients(request):
             "very_active": 1.75
         }
 
-        maintenance_calories = bmr * activity_multipliers.get(activity_level.lower(), 1.2)
+        maintenance_calories = bmr * \
+            activity_multipliers.get(activity_level.lower(), 1.2)
 
         # ✅ Adjust calories based on goal
         if goal == "Gain Weight":
@@ -544,7 +570,8 @@ def targetNutrients(request):
 
         protein_calories = protein_g * 4
         fats_calories = fats_g * 9
-        carbs_calories = recommended_calories - (protein_calories + fats_calories)
+        carbs_calories = recommended_calories - \
+            (protein_calories + fats_calories)
         carbs_g = round(carbs_calories / 4) if carbs_calories > 0 else 0
 
         sugar_g = round((recommended_calories * 0.1) / 4)
@@ -560,7 +587,8 @@ def targetNutrients(request):
             "active": 750,
             "very_active": 1000
         }
-        recommended_water_ml = base_water_ml + activity_water_bonus.get(activity_level.lower(), 0)
+        recommended_water_ml = base_water_ml + \
+            activity_water_bonus.get(activity_level.lower(), 0)
 
         return Response({
             "bmr": round(bmr),
@@ -590,9 +618,6 @@ def targetNutrients(request):
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-
-
-
 class targetNutrientsUpdate(APIView):
     """
     Provides a total summary for a single day.
@@ -607,11 +632,12 @@ class targetNutrientsUpdate(APIView):
 
         if not date_str:
             return Response({"error": "A 'date' query parameter is required. Use YYYY-MM-DD format."}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         try:
             # This is the user's local date, parsed into a date object.
             target_date = parse_date(date_str)
-            if not target_date: raise ValueError()
+            if not target_date:
+                raise ValueError()
         except ValueError:
             return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -625,11 +651,11 @@ class targetNutrientsUpdate(APIView):
         # from django.utils.timezone import make_aware
         # start_of_day = make_aware(datetime.combine(target_date, time.min))
         # end_of_day = make_aware(datetime.combine(target_date, time.max))
-        
+
         # The filter now correctly queries for meals within the user's local day.
         meals_today = UserMeal.objects.filter(
-            user=request.user, 
-            consumed_at__gte=start_of_day, 
+            user=request.user,
+            consumed_at__gte=start_of_day,
             consumed_at__lte=end_of_day
         )
 
@@ -651,8 +677,6 @@ class targetNutrientsUpdate(APIView):
             "sugar": totals["total_sugar"],
             "fiber": totals["total_fiber"],
         })
-    
-
 
 
 # ================================================================
@@ -695,9 +719,9 @@ class FoodSuggestionView(APIView):
         from utils.resend_email import send_resend_email
         from django.utils import timezone
 
-        user      = request.user
+        user = request.user
         meal_type = request.query_params.get("meal_type") or None
-        limit     = min(int(request.query_params.get("limit", 5)), 10)
+        limit = min(int(request.query_params.get("limit", 5)), 10)
 
         # ── Period param (?period=daily or ?period=weekly) ───────
         # Overrides the global SUGGESTION_PERIOD_DAYS setting.
@@ -705,20 +729,21 @@ class FoodSuggestionView(APIView):
         if period_param not in ("daily", "weekly", None):
             period_param = None  # ignore invalid values
 
-        result = build_suggestions(user=user, meal_type=meal_type, limit=limit, period=period_param)
+        result = build_suggestions(
+            user=user, meal_type=meal_type, limit=limit, period=period_param)
 
         if "error" in result:
             return Response({"detail": result["error"]}, status=400)
 
         # ── WebSocket push ───────────────────────────────────────
-        delivery  = result.get("delivery", {})
+        delivery = result.get("delivery", {})
         ws_pushed = False
-        email_q   = False
+        email_q = False
 
         if delivery.get("ws_should_push") and result.get("suggestions"):
             try:
                 channel_layer = get_channel_layer()
-                top       = result["suggestions"][0]
+                top = result["suggestions"][0]
                 remaining = result["remaining_nutrients"]
                 async_to_sync(channel_layer.group_send)(
                     f"user_{user.id}",
@@ -740,7 +765,8 @@ class FoodSuggestionView(APIView):
                 email_q = True
             except Exception as exc:
                 import logging
-                logging.getLogger(__name__).warning(f"Suggestion email failed: {exc}")
+                logging.getLogger(__name__).warning(
+                    f"Suggestion email failed: {exc}")
 
         return Response({
             "remaining_nutrients": result["remaining_nutrients"],
@@ -762,10 +788,10 @@ def _send_daily_suggestion_email(user, result, send_resend_email):
     """Sends the 7 pm daily nutrition-summary email."""
     from django.utils import timezone
 
-    today       = timezone.now().date()
-    remaining   = result["remaining_nutrients"]
+    today = timezone.now().date()
+    remaining = result["remaining_nutrients"]
     suggestions = result["suggestions"][:3]
-    goal        = result["goal"]
+    goal = result["goal"]
 
     rows_html = "".join([
         f"""
