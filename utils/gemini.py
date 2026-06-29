@@ -215,6 +215,7 @@ Now return the same JSON structure with correct values for: "{food_query}"
             except Exception:
                 logger.exception(
                     "AI attribute application failed (existing FoodItem).")
+                
         # === Changes made by Ananya (End) ===
 
             food_item_obj = existing
