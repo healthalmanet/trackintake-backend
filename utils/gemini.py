@@ -69,7 +69,10 @@ Rules:
 You MUST preserve ALL existing response fields exactly as before.
 
 Backwards compatible extension:
-- Add an OPTIONAL top-level field "attributes".
+- Add a REQUIRED top-level field named "attributes".
+- The "attributes" field must always be present.
+- Generate at least 3 meaningful attributes whenever possible.
+- Return an empty array only if no meaningful attributes exist.
 - "attributes" must be an array of objects of the form:
   {{
     "name": <string>,
@@ -79,7 +82,9 @@ Backwards compatible extension:
       ...
     ]
   }}
-- If you truly cannot infer any meaningful attributes, set "attributes" to [] OR omit it.
+- If no meaningful attributes exist, return:
+  "attributes": []
+- Never omit the "attributes" field.
 - Attributes inference must be dynamic (no hardcoding food-specific templates).
 - Infer attributes that can affect serving size, ingredients, preparation, or nutrition.
 
@@ -142,6 +147,9 @@ Now return the same JSON structure with correct values for: "{food_query}"
             config={"temperature": 0.0,
                     "response_mime_type": "application/json"},
         )
+        print("\n========== GEMINI RESPONSE ==========")
+        print(response.text)
+        print("====================================\n")
 
         data = json.loads(response.text)
         item_data = data.get("food_item")
