@@ -24,7 +24,25 @@ def check_patient_ai_diet_access(patient):
         .first()
     )
 
+    # Fallback to PathyaTech plan if no local active plan or it's a FREE plan
+    if not subscription or subscription.plan.price == 0:
+        from subscriptions.utils import check_pathyatech_subscription
+        pt_status = check_pathyatech_subscription(patient.email)
+        if pt_status.get("has_active_plan"):
+            plan_features = pt_status.get("plan", {}).get("features", {})
+            if plan_features.get("ai_diet_allowed", False):
+                return None  # Allowed
+            else:
+                raise PermissionDenied(
+                    "AI Diet is not included in the patient's PathyaTech plan."
+                )
+
     if not subscription:
+        raise PermissionDenied(
+            "Patient does not have an active subscription."
+        )
+
+    if subscription.plan.price == 0:
         raise PermissionDenied(
             "Patient does not have an active subscription."
         )
@@ -36,6 +54,7 @@ def check_patient_ai_diet_access(patient):
         )
 
     return subscription
+
 
 
 @transaction.atomic

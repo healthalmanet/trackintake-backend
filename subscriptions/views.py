@@ -28,6 +28,65 @@ class MySubscriptionView(APIView):
             .first()
         )
 
+        # If no local active plan or it's a FREE plan, check PathyaTech
+        if not subscription or subscription.plan.price == 0:
+            from subscriptions.utils import check_pathyatech_subscription
+            pt_status = check_pathyatech_subscription(request.user.email)
+            if pt_status.get("has_active_plan"):
+                pt_plan = pt_status.get("plan", {})
+                features = pt_plan.get("features", {}) or {}
+                
+                # Dynamic mapping of PathyaTech plan ID to local Plan ID based on name comparison
+                pt_name_lower = pt_plan.get("name", "").lower()
+                local_plan_id = pt_plan.get("id")
+                from subscriptions.models import Plan
+                mapped_plan = None
+                if "premium" in pt_name_lower:
+                    mapped_plan = Plan.objects.filter(name__icontains="premium", plan_type="patient").first()
+                elif "silver" in pt_name_lower:
+                    mapped_plan = Plan.objects.filter(name__icontains="silver", plan_type="patient").first()
+                elif "basic" in pt_name_lower:
+                    mapped_plan = Plan.objects.filter(name__icontains="basic", plan_type="patient").first()
+                
+                if mapped_plan:
+                    local_plan_id = mapped_plan.id
+
+                plan_data = {
+                    "id": local_plan_id,
+                    "name": pt_plan.get("name"),
+                    "plan_type": "patient",
+                    "price": pt_plan.get("price"),
+                    # Use duration from PathyaTech (90 days for Premium), default 90
+                    "duration_days": pt_plan.get("duration_days", 90),
+                    
+                    # Feature flags from PathyaTech response
+                    "weight_tracker_allowed": features.get("weight_tracker_allowed", False),
+                    "custom_reminder_allowed": features.get("custom_reminder_allowed", False),
+                    "chat_allowed": features.get("chat_allowed", False),
+                    "ai_diet_allowed": features.get("ai_diet_allowed", False),
+                    "meal_log_allowed": features.get("meal_log_allowed", False),
+                    "water_intake_allowed": features.get("water_intake_allowed", False),
+                    
+                    # TrackIntake-specific feature flags (Premium bundle)
+                    "nutrition_search_allowed": features.get("nutrition_search_allowed", True),
+                    "appointment_allowed": features.get("appointment_allowed", True),
+                    "BMI_Calculator_allowed": features.get("BMI_Calculator_allowed", True),
+                    "Fat_Calculator_allowed": features.get("Fat_Calculator_allowed", True),
+                    
+                    # Consultation limits
+                    "inhouse_consults": features.get("inhouse_consults", 1),
+                    "expert_consults": features.get("expert_consults", 0),
+                }
+                
+                return Response({
+                    "has_plan": True,
+                    "plan": plan_data,
+                    "is_active": True,
+                    "expires_at": pt_plan.get("expires_at"),
+                    "remaining_inhouse": features.get("inhouse_consults", 1),
+                    "remaining_expert": features.get("expert_consults", 0),
+                })
+
         if not subscription:
             return Response({
                 "has_plan": False,  # ✅ Yeh flag frontend use karega
@@ -43,6 +102,7 @@ class MySubscriptionView(APIView):
             "remaining_inhouse": subscription.remaining_inhouse,
             "remaining_expert": subscription.remaining_expert,
         })
+
 
 
 class PlanListView(APIView):

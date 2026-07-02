@@ -55,43 +55,63 @@ class IntegrationRegisterView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if User.objects.filter(email=email).exists():
-            return Response(
-                {"error": "A user with this email is already registered."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        user_exists = User.objects.filter(email=email).exists()
 
         try:
             with transaction.atomic():
-                # Create user
-                user = User.objects.create_user(
-                    email=email,
-                    full_name=full_name,
-                    password=password,
-                    role="user"
-                )
+                if user_exists:
+                    # Update existing user and password
+                    user = User.objects.get(email=email)
+                    user.full_name = full_name
+                    user.set_password(password)
+                    user.save()
 
-                # Create UserProfile
-                profile_fields = [
-                    'date_of_birth', 'country', 'city', 'mobile_number', 'gender', 
-                    'height_cm', 'weight_kg', 'occupation', 'activity_level', 'goal', 
-                    'diet_type', 'allergies', 'is_diabetic', 'is_hypertensive', 
-                    'has_heart_condition', 'has_thyroid_disorder', 'has_arthritis', 
-                    'has_gastric_issues', 'other_chronic_condition', 'family_history',
-                    'is_pregnant', 'due_date', 'is_breastfeeding'
-                ]
-                
-                profile_data = {
-                    field: request.data.get(field)
-                    for field in profile_fields
-                    if request.data.get(field) is not None
-                }
-                
-                # Ensure gender is provided since it has choices and is not nullable
-                if 'gender' not in profile_data:
-                    profile_data['gender'] = 'other'
+                    # Update UserProfile
+                    profile_fields = [
+                        'date_of_birth', 'country', 'city', 'mobile_number', 'gender', 
+                        'height_cm', 'weight_kg', 'occupation', 'activity_level', 'goal', 
+                        'diet_type', 'allergies', 'is_diabetic', 'is_hypertensive', 
+                        'has_heart_condition', 'has_thyroid_disorder', 'has_arthritis', 
+                        'has_gastric_issues', 'other_chronic_condition', 'family_history',
+                        'is_pregnant', 'due_date', 'is_breastfeeding'
+                    ]
+                    profile_data = {
+                        field: request.data.get(field)
+                        for field in profile_fields
+                        if request.data.get(field) is not None
+                    }
+                    if 'gender' not in profile_data:
+                        profile_data['gender'] = 'other'
 
-                UserProfile.objects.create(user=user, **profile_data)
+                    UserProfile.objects.update_or_create(user=user, defaults=profile_data)
+                else:
+                    # Create user
+                    user = User.objects.create_user(
+                        email=email,
+                        full_name=full_name,
+                        password=password,
+                        role="user"
+                    )
+
+                    # Create UserProfile
+                    profile_fields = [
+                        'date_of_birth', 'country', 'city', 'mobile_number', 'gender', 
+                        'height_cm', 'weight_kg', 'occupation', 'activity_level', 'goal', 
+                        'diet_type', 'allergies', 'is_diabetic', 'is_hypertensive', 
+                        'has_heart_condition', 'has_thyroid_disorder', 'has_arthritis', 
+                        'has_gastric_issues', 'other_chronic_condition', 'family_history',
+                        'is_pregnant', 'due_date', 'is_breastfeeding'
+                    ]
+                    
+                    profile_data = {
+                        field: request.data.get(field)
+                        for field in profile_fields
+                        if request.data.get(field) is not None
+                    }
+                    if 'gender' not in profile_data:
+                        profile_data['gender'] = 'other'
+
+                    UserProfile.objects.create(user=user, **profile_data)
 
                 # Auto-assign the FREE plan if one exists
                 free_plan = Plan.objects.filter(plan_type="patient", price=0, is_active=True).first()
@@ -316,7 +336,23 @@ class IntegrationCheckSubscriptionView(APIView):
             plan__plan_type="patient"
         ).select_related("plan").first()
 
-        if not subscription:
+        # If no local active plan or it's a FREE plan, check PathyaTech
+        if not subscription or subscription.plan.price == 0:
+            from subscriptions.utils import check_pathyatech_subscription
+            pt_status = check_pathyatech_subscription(request.user.email)
+            if pt_status.get("has_active_plan"):
+                pt_plan = pt_status.get("plan", {})
+                return Response({
+                    "has_active_plan": True,
+                    "plan": {
+                        "id": pt_plan.get("id"),
+                        "name": pt_plan.get("name"),
+                        "price": pt_plan.get("price"),
+                        "expires_at": pt_plan.get("expires_at")
+                    }
+                }, status=status.HTTP_200_OK)
+
+        if not subscription or subscription.plan.price == 0:
             return Response({
                 "has_active_plan": False,
                 "plan": None
@@ -331,6 +367,7 @@ class IntegrationCheckSubscriptionView(APIView):
                 "expires_at": subscription.end_date
             }
         }, status=status.HTTP_200_OK)
+
 
 
 class IntegrationLabReportViewSet(viewsets.ModelViewSet):
@@ -453,13 +490,21 @@ class IntegrationDietPlanView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Check if there is an active subscription
+        # Check if there is an active subscription (either local or PathyaTech)
         subscription = UserSubscription.objects.filter(user=request.user, is_active=True).first()
-        if not subscription:
+        has_pt_plan = False
+        if not subscription or subscription.plan.price == 0:
+            from subscriptions.utils import check_pathyatech_subscription
+            pt_status = check_pathyatech_subscription(request.user.email)
+            if pt_status.get("has_active_plan"):
+                has_pt_plan = True
+
+        if not subscription and not has_pt_plan:
             return Response(
                 {"error": "No active subscription plan found. Please subscribe to a plan first."},
                 status=status.HTTP_403_FORBIDDEN
             )
+
 
         # Fetch the latest recommendation
         plan = DietRecommendation.objects.filter(user=request.user).order_by("-created_at").first()
