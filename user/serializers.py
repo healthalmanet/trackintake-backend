@@ -14,7 +14,49 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
 
     def validate(self, attrs):
-        data = super().validate(attrs)
+        email = attrs.get("email") or attrs.get("username")
+        password = attrs.get("password")
+        try:
+            data = super().validate(attrs)
+        except Exception as e:
+            import requests
+            from django.conf import settings
+            pt_url = f"{getattr(settings, 'PATHYATECH_BACKEND_URL', 'http://localhost:9000').rstrip('/')}/api/auth/login/"
+            try:
+                pt_response = requests.post(pt_url, json={
+                    "email": email,
+                    "password": password,
+                    "role": "PATIENT"
+                }, timeout=5)
+                if pt_response.status_code == 200:
+                    pt_data = pt_response.json()
+                    pt_name = pt_data.get("name") or pt_data.get("full_name") or "Patient"
+                    
+                    user, created = User.objects.get_or_create(
+                        email=email.lower().strip(),
+                        defaults={
+                            "full_name": pt_name,
+                            "role": "user"
+                        }
+                    )
+                    user.set_password(password)
+                    user.save()
+                    
+                    from userProfile.models import UserProfile
+                    UserProfile.objects.get_or_create(user=user, defaults={"gender": "other"})
+                    
+                    from subscriptions.models import Plan
+                    from subscriptions.services import activate_plan_for_user
+                    free_plan = Plan.objects.filter(plan_type="patient", price=0, is_active=True).first()
+                    if free_plan:
+                        activate_plan_for_user(user=user, plan=free_plan)
+                        
+                    data = super().validate(attrs)
+                else:
+                    raise e
+            except Exception:
+                raise e
+
         user = self.user
 
         # ── Block unverified nutritionists ────────────────────────────────────
