@@ -38,15 +38,23 @@ class MySubscriptionView(APIView):
                 
                 # Dynamic mapping of PathyaTech plan ID to local Plan ID based on name comparison
                 pt_name_lower = pt_plan.get("name", "").lower()
+                ti_mapped_name = pt_plan.get("trackintake_plan_name")
                 local_plan_id = pt_plan.get("id")
                 from subscriptions.models import Plan
                 mapped_plan = None
-                if "premium" in pt_name_lower:
-                    mapped_plan = Plan.objects.filter(name__icontains="premium", plan_type="patient").first()
-                elif "silver" in pt_name_lower:
-                    mapped_plan = Plan.objects.filter(name__icontains="silver", plan_type="patient").first()
-                elif "basic" in pt_name_lower:
-                    mapped_plan = Plan.objects.filter(name__icontains="basic", plan_type="patient").first()
+                
+                # 1. Check exact match with trackintake_plan_name from PathyaTech
+                if ti_mapped_name:
+                    mapped_plan = Plan.objects.filter(name__iexact=ti_mapped_name, plan_type="patient").first()
+                
+                # 2. Fallback to substring matching if no exact match found
+                if not mapped_plan:
+                    if "premium" in pt_name_lower:
+                        mapped_plan = Plan.objects.filter(name__icontains="premium", plan_type="patient").first()
+                    elif "silver" in pt_name_lower:
+                        mapped_plan = Plan.objects.filter(name__icontains="silver", plan_type="patient").first()
+                    elif "basic" in pt_name_lower:
+                        mapped_plan = Plan.objects.filter(name__icontains="basic", plan_type="patient").first()
                 
                 if mapped_plan:
                     local_plan_id = mapped_plan.id
