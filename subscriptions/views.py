@@ -11,6 +11,8 @@ import hmac
 import hashlib
 # ✅ Correct — use Django's built-in get_user_model(), works regardless of app name
 from django.contrib.auth import get_user_model
+from django.utils import timezone
+
 User = get_user_model()
 
 class MySubscriptionView(APIView):
@@ -86,11 +88,25 @@ class MySubscriptionView(APIView):
                     "expert_consults": features.get("expert_consults", 0),
                 }
                 
+                expires_at_str = pt_plan.get("expires_at")
+                rem_days = 0
+                if expires_at_str:
+                    try:
+                        from datetime import datetime
+                        exp_d = datetime.strptime(str(expires_at_str)[:10], "%Y-%m-%d").date()
+                        rem_days = max(0, (exp_d - timezone.now().date()).days)
+                    except Exception:
+                        rem_days = pt_plan.get("duration_days", 90)
+                else:
+                    rem_days = pt_plan.get("duration_days", 90)
+
                 return Response({
                     "has_plan": True,
                     "plan": plan_data,
                     "is_active": True,
+                    "start_date": None,
                     "expires_at": pt_plan.get("expires_at"),
+                    "remaining_days": rem_days,
                     "remaining_inhouse": features.get("inhouse_consults", 1),
                     "remaining_expert": features.get("expert_consults", 0),
                 })
@@ -99,14 +115,18 @@ class MySubscriptionView(APIView):
             return Response({
                 "has_plan": False,  # ✅ Yeh flag frontend use karega
                 "plan": {"name": "No Plan", "price": 0},
-                "is_active": False
+                "is_active": False,
+                "remaining_days": 0,
             })
 
+        rem_days = max(0, (subscription.end_date - timezone.now().date()).days) if subscription.end_date else 0
         return Response({
             "has_plan": True,
             "plan": PlanSerializer(subscription.plan).data,
             "is_active": True,
+            "start_date": subscription.start_date,
             "expires_at": subscription.end_date,
+            "remaining_days": rem_days,
             "remaining_inhouse": subscription.remaining_inhouse,
             "remaining_expert": subscription.remaining_expert,
         })
@@ -464,3 +484,28 @@ class PayConsultationFeeView(APIView):
             "key": settings.RAZORPAY_KEY_ID,
             "consult_type": consult_type
         })
+
+
+class BillingHistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        payments = (
+            Payment.objects
+            .filter(user=request.user)
+            .select_related("plan")
+            .order_by("-created_at")
+        )
+        data = []
+        for p in payments:
+            data.append({
+                "id": p.id,
+                "plan_name": p.plan.name if p.plan else "N/A",
+                "plan_type": p.plan.plan_type if p.plan else "patient",
+                "amount": p.amount,
+                "status": p.status,
+                "razorpay_order_id": p.razorpay_order_id,
+                "razorpay_payment_id": p.razorpay_payment_id,
+                "created_at": p.created_at,
+            })
+        return Response(data)

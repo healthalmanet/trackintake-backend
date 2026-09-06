@@ -5,11 +5,11 @@ from .views import (
     PlanListView,
     MySubscriptionView,
     NutritionistRegistrationOrderView,
-    UserRegistrationOrderView,PayConsultationFeeView
+    UserRegistrationOrderView,
+    PayConsultationFeeView,
+    VerifyPaymentView,
+    BillingHistoryView,
 )
-from .views import VerifyPaymentView
-
-
 
 urlpatterns = [
     path("plans/", PlanListView.as_view()),
@@ -20,4 +20,5 @@ urlpatterns = [
     path("user-registration-order/", UserRegistrationOrderView.as_view()),
     path("verify-payment/", VerifyPaymentView.as_view()),
     path("pay-consultation/", PayConsultationFeeView.as_view()),
+    path("billing-history/", BillingHistoryView.as_view()),
 ]

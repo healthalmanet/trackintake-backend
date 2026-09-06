@@ -63,29 +63,38 @@ def _calculate_target_nutrients(data: dict) -> dict:
     return{"recommended_calories":round(rec_cals),"protein_g":protein_g,"carbs_g":carbs_g,"fats_g":fats_g}
 
 
-def _call_gemini_for_single_day_structured(profile: dict, targets: dict, day_number: int, used_foods: set) -> dict:
+def generate_ai_plan_for_patient(profile_dict, report_dict, targets_dict):
     """
-    Generates a structured, data-rich meal plan for ONE day. This is the robust method.
-    The prompt commands the AI to include the `quantity` field and all nutritional values.
+    PURE AI FUNCTION.
+    Generates the complete 3-day meal plan and suggestion flags in ONE single Gemini API call.
+    No Django ORM.
+    No DB access.
+    No connection handling.
     """
-    # ============================ START: THE ONLY CHANGE IS HERE ============================
-    prompt = f"""
-You are an expert clinical dietitian generating Day {day_number} of a 3-day meal plan.
+    try:
+        if not API_KEY:
+            return None, "GEMINI_API_KEY is not configured."
+
+        prompt = f"""
+You are an expert clinical dietitian generating a complete 3-day meal plan (Day 1, Day 2, Day 3) along with personalized clinical suggestion flags for a patient.
 
 User's health profile:
-{json.dumps(profile)}
+{json.dumps(profile_dict)}
+
+Lab report (if available):
+{json.dumps(report_dict)}
 
 Approximate daily targets to guide portion sizes:
-{json.dumps(targets)}
+{json.dumps(targets_dict)}
 
 --- 🌍 LOCATION-SPECIFIC INSTRUCTIONS ---
 1. The meal plan MUST strictly follow the food culture of:
-   - Country: {profile.get("country")}
-   - City (if available): {profile.get("city", "Not specified")}
+   - Country: {profile_dict.get("country", "Not specified")}
+   - City (if available): {profile_dict.get("city", "Not specified")}
 
 2. Use ingredients, cooking styles, and traditional dishes commonly eaten in that specific country and city.
    - Prefer locally available grains, vegetables, fruits, oils, and proteins.
-   - Avoid foreign or imported dishes unless they are commonly consumed in that region.
+   - Avoid foreign or imported dishes unless commonly consumed in that region.
    - Consider regional cooking oils (e.g., mustard oil in North India, coconut oil in South India, olive oil in Mediterranean countries).
    - Consider regional staple carbs (e.g., rice vs roti vs millet vs bread depending on geography).
    - Adjust spice level based on cultural norms of that region.
@@ -97,100 +106,60 @@ Approximate daily targets to guide portion sizes:
 4. If city is coastal → include more seafood options (if diet_type allows).
 5. If region is known for vegetarian culture → prefer vegetarian options unless user diet_type says otherwise.
 6. Consider seasonal and locally accessible produce in that region.
-    --- 🔴 CRITICAL INSTRUCTIONS 🔴 ---
-    1.  **`Sugar` and `Fiber` are NON-NEGOTIABLE:** You MUST include `Sugar` and `Fiber` keys with numeric values for every single food item. Do not omit them under any circumstances.
-    2.  **Full Nutritional Breakdown:** For each meal, the `food_name` must include an exact quantity and unit (e.g., "2 rotis (50 g each)"). You MUST also provide the full nutritional breakdown: `Calories`, `Protein`, `Fats`, `Carbs`, `Sugar`, `Fiber`, and `Gram_Equivalent`.
-    3.  **Nutritional Accuracy:** The nutritional values MUST be accurate for the specified food and quantity.
-    4.  **Variety:** AVOID using main dishes from this list: {', '.join(sorted(list(used_foods)))}.
-    5.  **JSON Only:** Output ONLY a single, valid JSON object with PascalCase keys for nutrients.
 
-    --- JSON SCHEMA FOR THIS SINGLE DAY ---
-    {{
-      "Early-Morning": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-      "Breakfast": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-      "Mid-Morning Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-      "Lunch": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-      "Afternoon Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-      "Dinner": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-      "Bedtime": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
-    }}
-    """
-    # ============================= END: THE ONLY CHANGE IS HERE =============================
-    try:
-        if not API_KEY: raise ValueError("GEMINI_API_KEY is not configured.")
+--- 🔴 CRITICAL INSTRUCTIONS 🔴 ---
+1. **Full 3-Day Plan & Variety:** Generate distinct meal plans for "Day 1", "Day 2", and "Day 3". Ensure variety in main dishes across the days (avoid repeating identical main dishes).
+2. **`Sugar` and `Fiber` are NON-NEGOTIABLE:** You MUST include `Sugar` and `Fiber` keys with numeric values for every single food item. Do not omit them under any circumstances.
+3. **Full Nutritional Breakdown:** For each meal, the `food_name` must include an exact quantity and unit (e.g., "2 rotis (50 g each)"). You MUST provide the full nutritional breakdown: `food_name`, `quantity`, `Gram_Equivalent`, `Calories`, `Protein`, `Carbs`, `Fats`, `Sugar`, and `Fiber`.
+4. **Nutritional Accuracy:** The nutritional values MUST be accurate for the specified food and quantity.
+5. **Suggestion Flags:** Include "suggestion_flags" as a JSON list of strings (e.g., ["promote_healthy_fats", "anti_inflammatory"]) based on the health profile and lab report.
+6. **JSON Only:** Output ONLY a single, valid JSON object with the exact schema below.
+
+--- JSON SCHEMA REQUIRED ---
+{{
+  "Day 1": {{
+    "Early-Morning": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Breakfast": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Mid-Morning Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Lunch": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Afternoon Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Dinner": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Bedtime": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
+  }},
+  "Day 2": {{
+    "Early-Morning": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Breakfast": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Mid-Morning Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Lunch": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Afternoon Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Dinner": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Bedtime": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
+  }},
+  "Day 3": {{
+    "Early-Morning": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Breakfast": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Mid-Morning Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Lunch": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Afternoon Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Dinner": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Bedtime": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
+  }},
+  "suggestion_flags": ["<flag1>", "<flag2>"]
+}}
+"""
+        print("Generating complete 3-day plan + flags in single Gemini call...")
         model = genai.GenerativeModel(model_name="gemini-2.5-flash")
         config = genai.types.GenerationConfig(temperature=0.4, response_mime_type="application/json")
         response = model.generate_content(prompt, generation_config=config)
-        return json.loads(response.text)
-    except ResourceExhausted:
-        # 🔴 VERY IMPORTANT
-        return {
-            "error": "AI_QUOTA_EXCEEDED"
-        }
+        full_plan_json = json.loads(response.text)
 
-    except Exception as e:
-        traceback.print_exc()
-        return {
-            "error": f"AI call failed for Day {day_number}: {e}"}
-
-def _call_gemini_for_flags(profile: dict, report: dict) -> list:
-    """A small, separate, reliable call to get just the suggestion flags."""
-    prompt = f"Analyze this health profile: {json.dumps(profile)} and lab report: {json.dumps(report)}. Return a JSON list of suggestion flags like [\"promote_healthy_fats\", \"anti_inflammatory\"]. Your output MUST be ONLY the JSON list."
-    try:
-        if not API_KEY: return []
-        model = genai.GenerativeModel(model_name="gemini-2.5-flash")
-        config = genai.types.GenerationConfig(temperature=0.0, response_mime_type="application/json")
-        response = model.generate_content(prompt, generation_config=config)
-        return json.loads(response.text)
-    except: return [] # Fail silently if flags can't be generated
-
-
-
-
-
-
-def generate_ai_plan_for_patient(profile_dict, report_dict, targets_dict):
-    """
-    PURE AI FUNCTION.
-    No Django ORM.
-    No DB access.
-    No connection handling.
-    """
-
-    try:
-        full_plan_json = {}
-        used_foods = set()
-
-        for day_num in range(1, 4):
-
-            print(f"Generating structured plan for Day {day_num}...")
-
-            daily_plan = _call_gemini_for_single_day_structured(
-                profile_dict,
-                targets_dict,
-                day_num,
-                used_foods
-            )
-
-            if daily_plan.get("error") == "AI_QUOTA_EXCEEDED":
-                return None, "AI quota exceeded. Try later."
-
-            if "error" in daily_plan:
-                return None, daily_plan["error"]
-
-            full_plan_json[f"Day {day_num}"] = daily_plan
-
-            for meal in daily_plan.values():
-                if isinstance(meal, dict):
-                    used_foods.add(meal.get("food_name"))
-
-            sleep(1)
-
-        flags = _call_gemini_for_flags(profile_dict, report_dict)
-        full_plan_json["suggestion_flags"] = flags
+        if "suggestion_flags" not in full_plan_json or not isinstance(full_plan_json["suggestion_flags"], list):
+            full_plan_json["suggestion_flags"] = []
 
         return full_plan_json, None
 
+    except ResourceExhausted:
+        return None, "AI quota exceeded. Try later."
     except Exception as e:
         traceback.print_exc()
         return None, str(e)
