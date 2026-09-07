@@ -108,12 +108,23 @@ Approximate daily targets to guide portion sizes:
 6. Consider seasonal and locally accessible produce in that region.
 
 --- 🔴 CRITICAL INSTRUCTIONS 🔴 ---
-1. **Full 3-Day Plan & Variety:** Generate distinct meal plans for "Day 1", "Day 2", and "Day 3". Ensure variety in main dishes across the days (avoid repeating identical main dishes).
-2. **`Sugar` and `Fiber` are NON-NEGOTIABLE:** You MUST include `Sugar` and `Fiber` keys with numeric values for every single food item. Do not omit them under any circumstances.
-3. **Full Nutritional Breakdown:** For each meal, the `food_name` must include an exact quantity and unit (e.g., "2 rotis (50 g each)"). You MUST provide the full nutritional breakdown: `food_name`, `quantity`, `Gram_Equivalent`, `Calories`, `Protein`, `Carbs`, `Fats`, `Sugar`, and `Fiber`.
-4. **Nutritional Accuracy:** The nutritional values MUST be accurate for the specified food and quantity.
-5. **Suggestion Flags:** Include "suggestion_flags" as a JSON list of strings (e.g., ["promote_healthy_fats", "anti_inflammatory"]) based on the health profile and lab report.
-6. **JSON Only:** Output ONLY a single, valid JSON object with the exact schema below.
+1. **EXACT QUANTITIES AND HOUSEHOLD MEASURES IN ALL FOOD NAMES (STRICT REQUIREMENT):**
+   - EVERY SINGLE item, beverage, drink, snack, water, tea, or milk MUST specify exact liquid volume (in ml), weight (in grams), count, or household measure directly in `food_name` and `quantity`.
+   - FORBIDDEN: Generic unmeasured names like "Warm water with lemon", "Skim Milk", "Green Tea", "Roasted Chana", "Greek Yogurt".
+   - MANDATORY EXAMPLES TO FOLLOW:
+     * Instead of "Warm water with lemon" ➔ "100ml Warm water with 1/2 squeezed lemon" (quantity: "100ml water + 1/2 lemon")
+     * Instead of "Skim Milk" ➔ "200ml Skim Milk (1 glass)" (quantity: "200ml")
+     * Instead of "Scrambled Eggs with Spinach and Whole Wheat Roti" ➔ "2 Scrambled Eggs (Anda Bhurji) with 1 cup Spinach and 1 small Whole Wheat Roti (30g)" (quantity: "2 eggs + 1 cup spinach + 1 roti (30g)")
+     * Instead of "Greek Yogurt with Mixed Berries" ➔ "150g Greek Yogurt (plain) with 1/2 cup Mixed Berries" (quantity: "150g yogurt + 1/2 cup berries")
+     * Instead of "Roasted Chana" ➔ "30g Roasted Chana (chickpeas) (2 tbsp)" (quantity: "30g / 2 tbsp")
+     * Instead of "Chicken Curry with Mixed Vegetable Sabzi and Brown Rice" ➔ "150g Chicken Curry (lean breast) with 1 cup Mixed Vegetable Sabzi and 1/2 cup Brown Rice (100g)" (quantity: "150g chicken + 1 cup sabzi + 1/2 cup rice")
+
+2. **Full 3-Day Plan & Variety:** Generate distinct meal plans for "Day 1", "Day 2", and "Day 3". Ensure variety in main dishes across the days (avoid repeating identical main dishes).
+3. **`Sugar` and `Fiber` are NON-NEGOTIABLE:** You MUST include `Sugar` and `Fiber` keys with numeric values for every single food item. Do not omit them under any circumstances.
+4. **Full Nutritional Breakdown:** Provide the complete breakdown: `food_name`, `quantity`, `Gram_Equivalent`, `Calories`, `Protein`, `Carbs`, `Fats`, `Sugar`, and `Fiber`.
+5. **Nutritional Accuracy:** The nutritional values MUST be accurate for the specified food and exact quantity.
+6. **Suggestion Flags:** Include "suggestion_flags" as a JSON list of strings (e.g., ["promote_healthy_fats", "anti_inflammatory"]) based on the health profile and lab report.
+7. **JSON Only:** Output ONLY a single, valid JSON object with the exact schema below.
 
 --- JSON SCHEMA REQUIRED ---
 {{
