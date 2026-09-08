@@ -21,10 +21,10 @@ from rest_framework.views import APIView
 
 from django_filters.rest_framework import DjangoFilterBackend
 
-from subscriptions.models import Plan
+from subscriptions.models import Plan, UserSubscription
 from subscriptions.services import activate_plan_for_user, check_patient_ai_diet_access
 
-from nutritionist.models import PatientAssignment
+from nutritionist.models import PatientAssignment, NutritionistProfile
 from nutritionist.permissions import IsVerifiedNutritionist
 
 from diet.models import DietRecommendation
@@ -789,3 +789,161 @@ class MyAssignedNutritionistView(APIView):
                 {'error': 'You have not been assigned a nutritionist yet.'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+
+# ==============================================================================
+# Nutritionist Self-Profile & Security Views
+# ==============================================================================
+
+class NutritionistSelfProfileView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        nutri_profile, _ = NutritionistProfile.objects.get_or_create(user=user)
+        user_profile = UserProfile.objects.filter(user=user).first()
+
+        assigned_patients_count = PatientAssignment.objects.filter(nutritionist=user).count()
+        total_diet_plans = DietRecommendation.objects.filter(reviewed_by=user).count()
+        active_diet_plans = DietRecommendation.objects.filter(
+            reviewed_by=user,
+            status="approved",
+            is_deleted=False
+        ).count()
+
+        sub = UserSubscription.objects.filter(user=user, is_active=True).select_related("plan").order_by("-created_at").first()
+        sub_data = None
+        if sub:
+            rem_days = max(0, (sub.end_date - timezone.now().date()).days) if sub.end_date else 0
+            is_valid = sub.is_active and (sub.end_date >= timezone.now().date() if sub.end_date else True)
+            sub_data = {
+                "has_plan": True,
+                "plan_name": sub.plan.name if sub.plan else "Active Plan",
+                "price": sub.plan.price if sub.plan else 0,
+                "duration_days": sub.plan.duration_days if sub.plan else 30,
+                "start_date": sub.start_date,
+                "expires_at": sub.end_date,
+                "remaining_days": rem_days,
+                "is_active": is_valid,
+            }
+        else:
+            sub_data = {
+                "has_plan": False,
+                "plan_name": "No Active Subscription",
+                "price": 0,
+                "duration_days": 0,
+                "start_date": None,
+                "expires_at": None,
+                "remaining_days": 0,
+                "is_active": False,
+            }
+
+        return Response({
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "role": user.role,
+                "date_joined": user.date_joined,
+                "is_active": user.is_active,
+            },
+            "nutritionist_profile": {
+                "nutritionist_type": nutri_profile.nutritionist_type,
+                "is_virtual_enabled": nutri_profile.is_virtual_enabled,
+                "is_verified": nutri_profile.is_verified,
+            },
+            "contact_details": {
+                "mobile_number": user_profile.mobile_number if user_profile else "",
+                "gender": user_profile.gender if user_profile else "",
+                "date_of_birth": user_profile.date_of_birth if user_profile else None,
+                "city": user_profile.city if user_profile else "",
+                "country": user_profile.country if user_profile else "",
+            },
+            "practice_metrics": {
+                "assigned_patients_count": assigned_patients_count,
+                "total_diet_plans": total_diet_plans,
+                "active_diet_plans": active_diet_plans,
+            },
+            "subscription": sub_data,
+        }, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        user = request.user
+        data = request.data
+
+        # Update User model
+        full_name = data.get("full_name")
+        if full_name is not None:
+            user.full_name = str(full_name).strip()
+            user.save(update_fields=["full_name"])
+
+        # Update or create UserProfile
+        user_profile, _ = UserProfile.objects.get_or_create(user=user)
+        if "mobile_number" in data:
+            user_profile.mobile_number = data.get("mobile_number") or ""
+        if "gender" in data:
+            user_profile.gender = data.get("gender") or ""
+        if "date_of_birth" in data:
+            dob_raw = data.get("date_of_birth")
+            user_profile.date_of_birth = parse_date(dob_raw) if dob_raw else None
+        if "city" in data:
+            user_profile.city = data.get("city") or ""
+        if "country" in data:
+            user_profile.country = data.get("country") or ""
+        user_profile.save()
+
+        # Update NutritionistProfile
+        nutri_profile, _ = NutritionistProfile.objects.get_or_create(user=user)
+        if "is_virtual_enabled" in data:
+            nutri_profile.is_virtual_enabled = bool(data.get("is_virtual_enabled"))
+            nutri_profile.save(update_fields=["is_virtual_enabled"])
+
+        return Response({"message": "Profile updated successfully."}, status=status.HTTP_200_OK)
+
+
+class NutritionistChangePasswordView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        old_password = request.data.get("old_password")
+        new_password = request.data.get("new_password")
+        confirm_password = request.data.get("confirm_password")
+
+        if not old_password or not new_password or not confirm_password:
+            return Response(
+                {"error": "Current password, new password, and confirmation are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not user.check_password(old_password):
+            return Response(
+                {"error": "Incorrect current password."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if new_password != confirm_password:
+            return Response(
+                {"error": "New password and confirmation do not match."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(new_password) < 8:
+            return Response(
+                {"error": "Password must be at least 8 characters long."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if old_password == new_password:
+            return Response(
+                {"error": "New password must be different from current password."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response(
+            {"message": "Your password has been changed successfully."},
+            status=status.HTTP_200_OK
+        )
