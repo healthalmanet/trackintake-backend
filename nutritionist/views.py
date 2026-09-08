@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.utils.timezone import now
 
+from django.http import HttpResponse
 from rest_framework import filters, generics, permissions, serializers, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import NotFound, PermissionDenied
@@ -57,6 +58,7 @@ from .serializers import (
     UserMealSerializer1,
     DietRecommendationWithPatientSerializer1,
 )
+from .bulk_upload import generate_patient_template_excel, process_patient_bulk_upload
 
 User = get_user_model()
 executor = ThreadPoolExecutor(max_workers=2)
@@ -141,9 +143,9 @@ class NutritionistCreatePatientView(generics.GenericAPIView):
         try:
             with transaction.atomic():
                 user = serializer.save()
-                PatientAssignment.objects.create(
-                    nutritionist=request.user,
-                    patient=user
+                PatientAssignment.objects.update_or_create(
+                    patient=user,
+                    defaults={'nutritionist': request.user}
                 )
                 # ❌ Free plan assign nahi karo
                 # Patient login karke khud plan kharide
@@ -154,6 +156,62 @@ class NutritionistCreatePatientView(generics.GenericAPIView):
                 )
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
+
+
+class DownloadPatientTemplateView(APIView):
+    """
+    Downloads the pre-filled Excel template (.xlsx) with column headers,
+    required field markers, and 10 realistic example patient records.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsNutritionist]
+
+    def get(self, request, *args, **kwargs):
+        try:
+            excel_content = generate_patient_template_excel()
+            response = HttpResponse(
+                excel_content,
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            response['Content-Disposition'] = 'attachment; filename="trackintake_patient_import_template.xlsx"'
+            response['Access-Control-Expose-Headers'] = 'Content-Disposition'
+            return response
+        except Exception as e:
+            return Response({"detail": f"Failed to generate template: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class BulkUploadPatientsView(APIView):
+    """
+    Accepts an Excel (.xlsx/.xls) file and bulk creates up to 1000s of patients,
+    attaches profiles & lab reports, and links them to the requesting nutritionist.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsNutritionist]
+
+    def post(self, request, *args, **kwargs):
+        uploaded_file = request.FILES.get('file')
+        if not uploaded_file:
+            return Response(
+                {"detail": "No file uploaded. Please upload a valid .xlsx Excel file."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not uploaded_file.name.lower().endswith(('.xlsx', '.xls')):
+            return Response(
+                {"detail": "Invalid file format. Only .xlsx or .xls files are supported."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            result = process_patient_bulk_upload(uploaded_file, request.user)
+            if not result.get("success", True):
+                return Response(result, status=status.HTTP_400_BAD_REQUEST)
+
+            status_code = status.HTTP_201_CREATED if result["created_count"] > 0 else status.HTTP_200_OK
+            return Response(result, status=status_code)
+        except Exception as e:
+            return Response(
+                {"detail": f"An error occurred while processing bulk upload: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 # ==============================================================================
@@ -432,7 +490,7 @@ class AllAssignedDietPlansListView(generics.ListAPIView):
 class ApproveOrRejectDietView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
 
-    def post(self, request, pk):
+    def post(self, request, pk=None, *args, **kwargs):
         action = request.data.get("action")
         comment = request.data.get("comment", "")
 
@@ -456,7 +514,8 @@ class ApproveOrRejectDietView(APIView):
 class UpdateRetrainingFlagsView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
 
-    def post(self, request, recommendation_id):
+    def post(self, request, pk=None, recommendation_id=None, *args, **kwargs):
+        plan_id = pk or recommendation_id
         notes = request.data.get("notes", "")
         approved_for_retraining = request.data.get("approved_for_retraining", False)
 
@@ -464,7 +523,7 @@ class UpdateRetrainingFlagsView(APIView):
             return Response({'error': '"approved_for_retraining" must be a boolean.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            recommendation = DietRecommendation.objects.get(id=recommendation_id)
+            recommendation = DietRecommendation.objects.get(id=plan_id)
             recommendation.nutritionist_retraining_notes = notes
             recommendation.approved_for_retraining = approved_for_retraining
             recommendation.save()
@@ -526,9 +585,10 @@ class EditDietPlanView(generics.GenericAPIView):
         }
 
     @transaction.atomic
-    def patch(self, request, recommendation_id):
+    def patch(self, request, pk=None, recommendation_id=None, *args, **kwargs):
+        plan_id = pk or recommendation_id
         try:
-            recommendation = DietRecommendation.objects.select_for_update().get(pk=recommendation_id)
+            recommendation = DietRecommendation.objects.select_for_update().get(pk=plan_id)
         except DietRecommendation.DoesNotExist:
             return Response({'error': 'Recommendation not found.'}, status=status.HTTP_404_NOT_FOUND)
 

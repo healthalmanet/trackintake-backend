@@ -8,6 +8,8 @@ from .views import (
     GeneratePlanForPatientView,
     MyAssignedNutritionistView,
     NutritionistCreatePatientView,
+    DownloadPatientTemplateView,
+    BulkUploadPatientsView,
     NutritionistPatientDietRecommendationsView,
     PatientDailySummaryView,
     PatientLabReportDetailView,
@@ -32,6 +34,8 @@ urlpatterns = [
     path('nutritionist/assign-patient/', AssignPatientAPIView.as_view(), name='nutritionist-assign-patient'),
     path('nutritionist/patients/', AssignedPatientsView.as_view(), name='nutritionist-assigned-patients'),
     path('nutritionist/create-patient/', NutritionistCreatePatientView.as_view(), name='nutritionist-create-patient'),
+    path('nutritionist/download-patient-template/', DownloadPatientTemplateView.as_view(), name='nutritionist-download-patient-template'),
+    path('nutritionist/bulk-upload-patients/', BulkUploadPatientsView.as_view(), name='nutritionist-bulk-upload-patients'),
 
     # ===================================================================
     # Nutritionist - Specific Patient Actions
