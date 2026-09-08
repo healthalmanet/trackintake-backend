@@ -74,15 +74,16 @@ class UserMealSerializer1(serializers.ModelSerializer):
 
 class DietRecommendationWithPatientSerializer1(serializers.ModelSerializer):
     """
-    Serializer for DietRecommendation that includes patient details.
+    Serializer for DietRecommendation that includes patient details and status.
     """
     patient_info = UserSerializer(source='user', read_only=True)
     
     class Meta:
         model = DietRecommendation
         fields = [
-            'id', 'for_week_starting', 'status', 'created_at',
-            'patient_info', 'meals', 'nutritionist_comment'
+            'id', 'for_week_starting', 'status', 'is_deleted', 'created_at', 'updated_at',
+            'patient_info', 'meals', 'nutritionist_comment', 'approved_for_retraining',
+            'nutritionist_retraining_notes', 'reviewed_by'
         ]
 ####################################################################----------------------------------------##########################
 
@@ -238,6 +239,7 @@ class DietRecommendationDetailSerializer(serializers.ModelSerializer):
             # Review & Workflow Fields
             'status',
             'status_display', # Human-readable status
+            'is_deleted',
             'nutritionist_comment',
             'reviewed_by',
             

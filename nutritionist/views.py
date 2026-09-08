@@ -516,17 +516,24 @@ class UpdateRetrainingFlagsView(APIView):
 
     def post(self, request, pk=None, recommendation_id=None, *args, **kwargs):
         plan_id = pk or recommendation_id
-        notes = request.data.get("notes", "")
-        approved_for_retraining = request.data.get("approved_for_retraining", False)
+        notes = request.data.get("notes") or request.data.get("feedback") or request.data.get("comment", "")
+        approved_raw = request.data.get("approved_for_retraining")
+        if approved_raw is None:
+            approved_raw = request.data.get("approved", True)
 
-        if not isinstance(approved_for_retraining, bool):
-            return Response({'error': '"approved_for_retraining" must be a boolean.'}, status=status.HTTP_400_BAD_REQUEST)
+        if isinstance(approved_raw, str):
+            approved_for_retraining = approved_raw.strip().lower() in ["true", "1", "yes"]
+        else:
+            approved_for_retraining = bool(approved_raw)
 
         try:
             recommendation = DietRecommendation.objects.get(id=plan_id)
+            if not PatientAssignment.objects.filter(nutritionist=request.user, patient=recommendation.user).exists() and recommendation.reviewed_by != request.user:
+                return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
+
             recommendation.nutritionist_retraining_notes = notes
             recommendation.approved_for_retraining = approved_for_retraining
-            recommendation.save()
+            recommendation.save(update_fields=['nutritionist_retraining_notes', 'approved_for_retraining', 'updated_at'])
             return Response({'message': 'Retraining feedback submitted successfully.'}, status=status.HTTP_200_OK)
         except DietRecommendation.DoesNotExist:
             return Response({'error': 'Recommendation not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -647,38 +654,46 @@ class EditDietPlanView(generics.GenericAPIView):
         }, status=status.HTTP_200_OK)
 
 
-class ArchiveDietPlanView(generics.UpdateAPIView):
+class ArchiveDietPlanView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
-    serializer_class = DietRecommendationSerializer
 
-    def get_queryset(self):
-        assigned_patient_ids = PatientAssignment.objects.filter(
-            nutritionist=self.request.user
-        ).values_list('patient_id', flat=True)
-        return DietRecommendation.objects.filter(user_id__in=assigned_patient_ids, is_deleted=False)
+    def patch(self, request, pk=None, *args, **kwargs):
+        return self._archive(request, pk)
 
-    def patch(self, request, *args, **kwargs):
-        instance = self.get_object()
-        instance.is_deleted = True
-        instance.save(update_fields=['is_deleted', 'updated_at'])
-        return Response({"message": "The diet plan has been successfully archived."}, status=status.HTTP_200_OK)
+    def post(self, request, pk=None, *args, **kwargs):
+        return self._archive(request, pk)
+
+    def _archive(self, request, pk):
+        try:
+            plan = DietRecommendation.objects.get(id=pk)
+            if not PatientAssignment.objects.filter(nutritionist=request.user, patient=plan.user).exists() and plan.reviewed_by != request.user:
+                return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
+            plan.is_deleted = True
+            plan.save(update_fields=['is_deleted', 'updated_at'])
+            return Response({"message": "The diet plan has been successfully archived."}, status=status.HTTP_200_OK)
+        except DietRecommendation.DoesNotExist:
+            return Response({'error': 'Diet plan not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
-class RestoreDietPlanView(generics.UpdateAPIView):
+class RestoreDietPlanView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
-    serializer_class = DietRecommendationSerializer
 
-    def get_queryset(self):
-        assigned_patient_ids = PatientAssignment.objects.filter(
-            nutritionist=self.request.user
-        ).values_list('patient_id', flat=True)
-        return DietRecommendation.objects.filter(user_id__in=assigned_patient_ids, is_deleted=True)
+    def patch(self, request, pk=None, *args, **kwargs):
+        return self._restore(request, pk)
 
-    def patch(self, request, *args, **kwargs):
-        instance = self.get_object()
-        instance.is_deleted = False
-        instance.save(update_fields=['is_deleted', 'updated_at'])
-        return Response({"message": "The diet plan has been successfully restored."}, status=status.HTTP_200_OK)
+    def post(self, request, pk=None, *args, **kwargs):
+        return self._restore(request, pk)
+
+    def _restore(self, request, pk):
+        try:
+            plan = DietRecommendation.objects.get(id=pk)
+            if not PatientAssignment.objects.filter(nutritionist=request.user, patient=plan.user).exists() and plan.reviewed_by != request.user:
+                return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
+            plan.is_deleted = False
+            plan.save(update_fields=['is_deleted', 'updated_at'])
+            return Response({"message": "The diet plan has been successfully restored."}, status=status.HTTP_200_OK)
+        except DietRecommendation.DoesNotExist:
+            return Response({'error': 'Diet plan not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
 # ==============================================================================
