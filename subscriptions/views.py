@@ -19,6 +19,45 @@ class MySubscriptionView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        user_role = getattr(request.user, "role", "user")
+
+        # ── Nutritionist flow ───────────────────────────────────────────────
+        if user_role == "nutritionist":
+            subscription = (
+                UserSubscription.objects
+                .filter(
+                    user=request.user,
+                    is_active=True,
+                )
+                .select_related("plan")
+                .order_by("-created_at")
+                .first()
+            )
+
+            if not subscription:
+                return Response({
+                    "has_plan": False,
+                    "plan": {"name": "No Plan", "price": 0, "plan_type": "nutritionist"},
+                    "is_active": False,
+                    "remaining_days": 0,
+                    "role": "nutritionist",
+                })
+
+            rem_days = max(0, (subscription.end_date - timezone.now().date()).days) if subscription.end_date else 0
+            is_valid = subscription.is_active and (subscription.end_date >= timezone.now().date() if subscription.end_date else True)
+            return Response({
+                "has_plan": True,
+                "plan": PlanSerializer(subscription.plan).data,
+                "is_active": is_valid,
+                "start_date": subscription.start_date,
+                "expires_at": subscription.end_date,
+                "remaining_days": rem_days,
+                "remaining_inhouse": subscription.remaining_inhouse,
+                "remaining_expert": subscription.remaining_expert,
+                "role": "nutritionist",
+            })
+
+        # ── Patient / Normal User flow ──────────────────────────────────────
         subscription = (
             UserSubscription.objects
             .filter(
