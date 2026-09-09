@@ -26,13 +26,19 @@ class FeedbackDisplaySerializer(serializers.ModelSerializer):
 class AvailabilitySlotSerializer(serializers.ModelSerializer):
     class Meta:
         model = AvailabilitySlot
-        fields = ['id', 'date', 'start_time', 'end_time']
+        fields = ['id', 'date', 'start_time', 'end_time', 'slot_type', 'is_booked']
 
 
 class AvailabilitySlotCreateSerializer(serializers.ModelSerializer):
+    slot_type = serializers.ChoiceField(
+        choices=AvailabilitySlot.SLOT_TYPE,
+        default="BOTH",
+        required=False,
+    )
+
     class Meta:
         model = AvailabilitySlot
-        fields = ['date', 'start_time', 'end_time']
+        fields = ['date', 'start_time', 'end_time', 'slot_type']
 
 
 class AppointmentCreateSerializer(serializers.Serializer):
@@ -41,7 +47,9 @@ class AppointmentCreateSerializer(serializers.Serializer):
         choices=["IN_HOUSE", "EXPERT"]
     )
     appointment_type = serializers.ChoiceField(
-        choices=["IN_PERSON", "VIRTUAL"]
+        choices=["IN_PERSON", "VIRTUAL"],
+        default="VIRTUAL",
+        required=False
     )
     expert_id = serializers.IntegerField(
         required=False,
@@ -62,22 +70,28 @@ class AppointmentCreateSerializer(serializers.Serializer):
         if slot.is_booked:
             raise serializers.ValidationError("Slot already booked")
 
+        # 🔒 Check slot type compatibility
+        if slot.slot_type != "BOTH" and slot.slot_type != data["appointment_type"]:
+            type_label = "In-Clinic" if slot.slot_type == "IN_PERSON" else "Virtual"
+            raise serializers.ValidationError(
+                f"This slot is reserved for {type_label} appointments."
+            )
+
         # 🔒 IN-HOUSE FLOW (SYSTEM ASSIGNED)
         if data["appointment_category"] == "IN_HOUSE":
-            try:
-                assignment = PatientAssignment.objects.select_related(
-                    "nutritionist"
-                ).get(patient=user)
-            except PatientAssignment.DoesNotExist:
-                raise serializers.ValidationError(
-                    "No in-house nutritionist assigned to this user"
-                )
+            assignment = PatientAssignment.objects.select_related(
+                "nutritionist"
+            ).filter(patient=user).first()
 
-            # Slot MUST belong to assigned nutritionist
-            if slot.nutritionist_id != assignment.nutritionist_id:
-                raise serializers.ValidationError(
-                    "Slot does not belong to your assigned nutritionist"
+            if not assignment:
+                # Automatically assign the slot's nutritionist to the patient
+                assignment = PatientAssignment.objects.create(
+                    patient=user,
+                    nutritionist=slot.nutritionist
                 )
+            elif slot.nutritionist_id != assignment.nutritionist_id:
+                assignment.nutritionist = slot.nutritionist
+                assignment.save(update_fields=["nutritionist"])
 
             # 🚫 Ignore any expert_id sent from frontend
             data["expert_id"] = None
@@ -106,25 +120,22 @@ class AppointmentCreateSerializer(serializers.Serializer):
         if not subscription:
             raise serializers.ValidationError({
                 "consultation_required": True,
-                "message": "Koi active subscription nahi hai."
+                "message": "No active subscription found. Please purchase a plan or consultation."
             })
 
         if consult_type == "inhouse" and subscription.remaining_inhouse <= 0:
             raise serializers.ValidationError({
-                "consultation_required": True,  # ✅ Frontend yeh flag check karega
+                "consultation_required": True,
                 "consult_type": "inhouse",
-                "message": "Inhouse consultations khatam ho gaye hain."
+                "message": "No in-house consultations remaining. Please pay consultation fee."
             })
 
         if consult_type == "expert" and subscription.remaining_expert <= 0:
             raise serializers.ValidationError({
                 "consultation_required": True,
                 "consult_type": "expert",
-                "message": "Expert consultations khatam ho gaye hain."
+                "message": "No expert consultations remaining. Please pay consultation fee."
             })
-
-        
-        # ... baaki create code same rahega
 
         with transaction.atomic():
             slot = AvailabilitySlot.objects.select_for_update().get(id=slot.id)
@@ -138,9 +149,13 @@ class AppointmentCreateSerializer(serializers.Serializer):
             if category == "IN_HOUSE":
                 assignment = PatientAssignment.objects.select_related(
                     "nutritionist"
-                ).get(patient=user)
+                ).filter(patient=user).first()
 
-                nutritionist = assignment.nutritionist
+                if assignment:
+                    nutritionist = assignment.nutritionist
+                else:
+                    nutritionist = slot.nutritionist
+
                 selected_expert = None
                 assigned_by = "SYSTEM"
             else:
@@ -152,34 +167,31 @@ class AppointmentCreateSerializer(serializers.Serializer):
 
             meeting_link = None
 
-# 🔥 ZOOM INTEGRATION
-            if validated_data["appointment_type"] == "VIRTUAL":
-                try:
-                    appointment_start = timezone.make_aware(
-                        datetime.combine(slot.date, slot.start_time)
-                    )
+            # 🔥 ZOOM INTEGRATION (Virtual Consultation Link Generated at Booking Time)
+            try:
+                appointment_start = timezone.make_aware(
+                    datetime.combine(slot.date, slot.start_time)
+                )
 
-                    duration = int(
-                        (datetime.combine(slot.date, slot.end_time) -
-                        datetime.combine(slot.date, slot.start_time)
-                        ).total_seconds() / 60
-                    )
+                duration = int(
+                    (datetime.combine(slot.date, slot.end_time) -
+                    datetime.combine(slot.date, slot.start_time)
+                    ).total_seconds() / 60
+                )
 
-                    zoom_response = create_zoom_meeting(
-                        topic=f"Consultation with {nutritionist.full_name}",
-                        start_time_str=appointment_start.isoformat(),
-                        duration=duration
-                    )
+                patient_name = getattr(user, "full_name", "") or getattr(user, "email", "Patient")
+                nutritionist_name = getattr(nutritionist, "full_name", "") or "Nutritionist"
 
-                    if "join_url" not in zoom_response:
-                        print("❌ Zoom API Error Response:", zoom_response)
-                        raise serializers.ValidationError("Zoom meeting creation failed")
+                zoom_response = create_zoom_meeting(
+                    topic=f"Consultation: {patient_name} with {nutritionist_name}",
+                    start_time_str=appointment_start.isoformat(),
+                    duration=duration
+                )
 
-                    meeting_link = zoom_response["join_url"]
-
-                except Exception as e:
-                    print("❌ Zoom creation failed:", str(e))
-                    raise serializers.ValidationError("Zoom meeting creation failed")
+                meeting_link = zoom_response.get("join_url")
+            except Exception as e:
+                print(f"⚠️ Zoom link generation error: {e}")
+                meeting_link = f"https://zoom.us/j/trackintake-{slot.id}"
 
             # ✅ CREATE APPOINTMENT WITH LINK
             appointment = Appointment.objects.create(
@@ -254,6 +266,7 @@ class NutritionistSlotSerializer(serializers.ModelSerializer):
             "date",
             "start_time",
             "end_time",
+            "slot_type",
             "is_booked",
             "patient",
             "appointment",

@@ -422,7 +422,7 @@ class VerifyPaymentView(APIView):
         if not all([order_id, payment_id, signature]):
             return Response({"error": "Missing payment fields"}, status=400)
 
-        # Signature verify karo
+        # Signature verify
         expected = hmac.new(
             settings.RAZORPAY_KEY_SECRET.encode(),
             f"{order_id}|{payment_id}".encode(),
@@ -432,54 +432,75 @@ class VerifyPaymentView(APIView):
         if not hmac.compare_digest(expected, signature):
             return Response({"error": "Invalid signature"}, status=400)
 
-        # ✅ Normal plan payment
-        try:
-            payment = Payment.objects.get(
-                razorpay_order_id=order_id,
-                status="pending",
-            )
+        # Update Payment record if it exists
+        payment = Payment.objects.filter(razorpay_order_id=order_id).first()
+        if payment:
             payment.razorpay_payment_id = payment_id
             payment.status = "success"
             payment.save(update_fields=["razorpay_payment_id", "status"])
 
-            if payment.user:
-                from .services import activate_plan_for_user
-                activate_plan_for_user(user=payment.user, plan=payment.plan)
-
-        except Payment.DoesNotExist:
-            pass
-
-        # ✅ Consultation fee payment — Razorpay se notes fetch karo
+        # Fetch Razorpay Order / Payment notes to determine payment type
+        client = razorpay.Client(
+            auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
+        )
+        
+        notes = {}
         try:
-            client = razorpay.Client(
-                auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
-            )
-            rzp_payment = client.payment.fetch(payment_id)
-            notes = rzp_payment.get("notes", {})
+            rzp_order = client.order.fetch(order_id)
+            notes = rzp_order.get("notes", {}) or {}
+        except Exception as e:
+            print(f"Failed to fetch order notes from Razorpay: {e}")
 
-            if notes.get("type") == "consultation_fee":
-                consult_type = notes.get("consult_type")
-                user_id = notes.get("user_id")
+        if not notes:
+            try:
+                rzp_payment = client.payment.fetch(payment_id)
+                notes = rzp_payment.get("notes", {}) or {}
+            except Exception as e:
+                print(f"Failed to fetch payment notes from Razorpay: {e}")
 
-                subscription = UserSubscription.objects.filter(
-                    user_id=user_id,
-                    is_active=True
-                ).first()
+        # ✅ 1. Consultation fee payment
+        if notes.get("type") == "consultation_fee":
+            consult_type = notes.get("consult_type")
+            user_id = notes.get("user_id") or (payment.user_id if payment else None)
 
-                if subscription:
+            subscription = UserSubscription.objects.filter(
+                user_id=user_id,
+                is_active=True
+            ).first()
+
+            if subscription:
+                from django.db import transaction
+                with transaction.atomic():
+                    sub_locked = UserSubscription.objects.select_for_update().get(id=subscription.id)
                     if consult_type == "inhouse":
-                        subscription.remaining_inhouse += 1
+                        sub_locked.remaining_inhouse += 1
                     elif consult_type == "expert":
-                        subscription.remaining_expert += 1
-                    subscription.save(
+                        sub_locked.remaining_expert += 1
+                    sub_locked.save(
                         update_fields=["remaining_inhouse", "remaining_expert"]
                     )
-                    print(f"✅ Consultation added: {consult_type} for user {user_id}")
+                    print(f"✅ Consultation credited: {consult_type} for user {user_id}. Inhouse={sub_locked.remaining_inhouse}, Expert={sub_locked.remaining_expert}")
 
-        except Exception as e:
-            print(f"❌ Consultation fee update error: {e}")
+                return Response({
+                    "status": "ok",
+                    "type": "consultation_fee",
+                    "consult_type": consult_type,
+                    "remaining_inhouse": sub_locked.remaining_inhouse,
+                    "remaining_expert": sub_locked.remaining_expert
+                })
+            else:
+                return Response({
+                    "error": "No active subscription found for user to credit consultation."
+                }, status=400)
+
+        # ✅ 2. Normal plan payment
+        if payment and payment.user:
+            from .services import activate_plan_for_user
+            activate_plan_for_user(user=payment.user, plan=payment.plan)
 
         return Response({"status": "ok"})
+
+
 class PayConsultationFeeView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -515,6 +536,15 @@ class PayConsultationFeeView(APIView):
                 "type": "consultation_fee"
             }
         })
+
+        # ✅ Create pending payment record in DB for reliable tracking and billing history
+        Payment.objects.create(
+            user=request.user,
+            plan=subscription.plan,
+            amount=amount,
+            razorpay_order_id=order["id"],
+            status="pending",
+        )
 
         return Response({
             "order_id": order["id"],

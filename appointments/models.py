@@ -1,3 +1,4 @@
+
 # from django.db import models
 # from django.conf import settings
 # from django.core.exceptions import ValidationError
@@ -155,6 +156,12 @@ from nutritionist.models import NutritionistProfile
 # Availability Slot
 # ======================================================
 class AvailabilitySlot(models.Model):
+    SLOT_TYPE = (
+        ("VIRTUAL", "Virtual"),
+        ("IN_PERSON", "In-Clinic"),
+        ("BOTH", "Both (Virtual & In-Clinic)"),
+    )
+
     nutritionist = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -165,6 +172,12 @@ class AvailabilitySlot(models.Model):
     date = models.DateField(db_index=True)
     start_time = models.TimeField()
     end_time = models.TimeField()
+    slot_type = models.CharField(
+        max_length=20,
+        choices=SLOT_TYPE,
+        default="BOTH",
+        db_index=True,
+    )
 
     is_booked = models.BooleanField(default=False, db_index=True)
 
@@ -173,6 +186,7 @@ class AvailabilitySlot(models.Model):
         indexes = [
             # Fast dashboard filtering
             models.Index(fields=["nutritionist", "is_booked"]),
+            models.Index(fields=["nutritionist", "slot_type"]),
             models.Index(fields=["nutritionist", "-date", "-start_time"]),
             # Overlap validation optimization
             models.Index(fields=["nutritionist", "date"]),

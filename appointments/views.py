@@ -341,17 +341,29 @@ class MyInHouseNutritionistView(APIView):
 # ─────────────────────────────────────────────
 # AVAILABLE SLOTS FOR A NUTRITIONIST (Patient)
 # ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# AVAILABLE SLOTS FOR A NUTRITIONIST (Patient)
+# ─────────────────────────────────────────────
 class AvailableSlotsView(ListAPIView):
     serializer_class = AvailabilitySlotSerializer
 
     def get_queryset(self):
         nutritionist_id = self.kwargs['nutritionist_id']
         date = self.request.query_params.get('date')
-        return AvailabilitySlot.objects.filter(
+        appointment_type = self.request.query_params.get('appointment_type')
+
+        qs = AvailabilitySlot.objects.filter(
             nutritionist_id=nutritionist_id,
             date=date,
             is_booked=False
         )
+
+        if appointment_type:
+            qs = qs.filter(
+                Q(slot_type=appointment_type) | Q(slot_type="BOTH")
+            )
+
+        return qs
 
 
 # ─────────────────────────────────────────────
@@ -386,17 +398,70 @@ class MyAppointmentsView(ListAPIView):
 
 
 # ─────────────────────────────────────────────
-# NUTRITIONIST: ADD AVAILABILITY SLOT
+# NUTRITIONIST: ADD AVAILABILITY SLOT(S)
 # ─────────────────────────────────────────────
-class NutritionistAddAvailabilityView(CreateAPIView):
-    serializer_class = AvailabilitySlotCreateSerializer
+class NutritionistAddAvailabilityView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def perform_create(self, serializer):
-        serializer.save(
-            nutritionist=self.request.user,
-            is_booked=False
-        )
+    def post(self, request):
+        data = request.data
+        # Support both single slot and list of slots
+        is_bulk = isinstance(data, list)
+        
+        if is_bulk:
+            serializer = AvailabilitySlotCreateSerializer(data=data, many=True)
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+            created_slots = []
+            errors = []
+            
+            with transaction.atomic():
+                for item in serializer.validated_data:
+                    slot = AvailabilitySlot(
+                        nutritionist=request.user,
+                        is_booked=False,
+                        **item
+                    )
+                    try:
+                        slot.full_clean()
+                        slot.save()
+                        created_slots.append(slot)
+                    except Exception as e:
+                        errors.append(f"{item.get('start_time')}-{item.get('end_time')}: {str(e)}")
+            
+            if not created_slots and errors:
+                return Response(
+                    {"detail": "Failed to create slots.", "errors": errors},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            return Response(
+                {
+                    "created_count": len(created_slots),
+                    "slots": AvailabilitySlotSerializer(created_slots, many=True).data,
+                    "errors": errors if errors else None,
+                },
+                status=status.HTTP_201_CREATED
+            )
+        else:
+            serializer = AvailabilitySlotCreateSerializer(data=data)
+            if serializer.is_valid():
+                try:
+                    slot = serializer.save(
+                        nutritionist=request.user,
+                        is_booked=False
+                    )
+                    return Response(
+                        AvailabilitySlotSerializer(slot).data,
+                        status=status.HTTP_201_CREATED
+                    )
+                except Exception as e:
+                    return Response(
+                        {"detail": str(e)},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ─────────────────────────────────────────────
@@ -479,6 +544,11 @@ class NutritionistMySlotsView(APIView):
         search = request.query_params.get("search")
         date = request.query_params.get("date")
         slot_status = request.query_params.get("status")  # booked / unbooked
+        slot_type = request.query_params.get("slot_type")  # VIRTUAL / IN_PERSON / BOTH
+        time_horizon = request.query_params.get("time_horizon") or request.query_params.get("period")  # upcoming / past / all
+
+        today = localdate()
+        now_time = timezone.localtime().time()
 
         qs = (
             AvailabilitySlot.objects
@@ -502,13 +572,29 @@ class NutritionistMySlotsView(APIView):
             if parsed_date:
                 qs = qs.filter(date=parsed_date)
 
+        # 🏷️ Filter by slot type
+        if slot_type:
+            qs = qs.filter(slot_type=slot_type)
+
         # 📌 Filter by status
         if slot_status == "booked":
             qs = qs.filter(is_booked=True)
         elif slot_status == "unbooked":
             qs = qs.filter(is_booked=False)
 
-        qs = qs.order_by("-date", "-start_time")
+        # ⏳ Filter by Upcoming / Past
+        if time_horizon == "upcoming":
+            qs = qs.filter(
+                Q(date__gt=today) |
+                Q(date=today, end_time__gte=now_time)
+            ).order_by("date", "start_time")
+        elif time_horizon == "past":
+            qs = qs.filter(
+                Q(date__lt=today) |
+                Q(date=today, end_time__lt=now_time)
+            ).order_by("-date", "-start_time")
+        else:
+            qs = qs.order_by("date", "start_time")
 
         return Response({
             "unbooked_slots": NutritionistSlotSerializer(
