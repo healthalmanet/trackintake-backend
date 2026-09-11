@@ -108,40 +108,61 @@ def send_and_reschedule_reminders():
 
 
 
-def send_message_notification(sender, receiver, text):
+def send_message_notification(sender_or_message, receiver=None, text=None):
+    from features.models import Message
+
+    if isinstance(sender_or_message, Message):
+        message_obj = sender_or_message
+        sender = message_obj.sender
+        receiver = message_obj.receiver
+        text = message_obj.text
+    else:
+        sender = sender_or_message
+        message_obj = None
+
     channel_layer = get_channel_layer()
-    message = f"📩 New message from {sender.full_name or sender.email}: {text}"
+    email_text = f"📩 New message from {sender.full_name or sender.email}: {text}"
 
     # Gmail
     try:
         send_mail(
             subject="New Message Notification",
-            message=message,
+            message=email_text,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[receiver.email],
-            fail_silently=False,
+            fail_silently=True,
         )
         logger.info(f"📧 Email sent to {receiver.email}")
     except Exception as e:
         logger.error(f"❌ Email failed: {e}")
 
-    # WebSocket
+    # WebSocket Broadcast
+    from django.utils import timezone
+    msg_id = message_obj.id if message_obj else None
+    timestamp_str = message_obj.timestamp.isoformat() if message_obj and hasattr(message_obj, "timestamp") else timezone.now().isoformat()
+    is_read = message_obj.is_read if message_obj else False
+
+    payload = {
+        "type": "send_message",
+        "id": msg_id,
+        "sender_id": sender.id,
+        "sender_name": sender.full_name or sender.email,
+        "sender_email": sender.email,
+        "receiver_id": receiver.id,
+        "receiver_name": receiver.full_name or receiver.email,
+        "receiver_email": receiver.email,
+        "text": text,
+        "message": text,
+        "timestamp": timestamp_str,
+        "is_read": is_read,
+    }
+
     try:
         async_to_sync(channel_layer.group_send)(
-        f"user_{receiver.id}",
-        {
-            "type": "send_message",
-            "message": text,
-            "sender_id": sender.id,
-            "sender_name": sender.full_name,
-            "sender_email": sender.email,
-            "receiver_id": receiver.id,
-            "receiver_name": receiver.full_name,
-            "receiver_email": receiver.email
-        }
-    )
-
-        logger.info(f"📲 WebSocket sent to user {receiver.id}")
+            f"user_{receiver.id}",
+            payload
+        )
+        logger.info(f"📲 WebSocket sent to receiver user_{receiver.id}")
     except Exception as e:
         logger.error(f"❌ WebSocket failed: {e}")
 

@@ -195,7 +195,7 @@ class SendMessageView(generics.CreateAPIView):
         )
         receiver_id = self.request.data.get("receiver")
         message = serializer.save(sender=self.request.user, receiver_id=receiver_id)
-        send_message_notification(self.request.user, message.receiver, message.text)
+        send_message_notification(message)
 
 
 
@@ -205,9 +205,16 @@ class MessageListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Message.objects.filter(
+        qs = Message.objects.filter(
             Q(sender=self.request.user) | Q(receiver=self.request.user)
-        ).order_by('-timestamp')        
+        ).order_by('-timestamp')
+        is_read = self.request.query_params.get('is_read')
+        if is_read is not None:
+            if is_read.lower() in ['true', '1']:
+                qs = qs.filter(is_read=True)
+            elif is_read.lower() in ['false', '0']:
+                qs = qs.filter(is_read=False)
+        return qs        
 
 
 class MarkMessagesReadView(generics.GenericAPIView):

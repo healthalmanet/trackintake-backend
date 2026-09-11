@@ -8,6 +8,8 @@ from .views import (
     GeneratePlanForPatientView,
     MyAssignedNutritionistView,
     NutritionistCreatePatientView,
+    DownloadPatientTemplateView,
+    BulkUploadPatientsView,
     NutritionistPatientDietRecommendationsView,
     PatientDailySummaryView,
     PatientLabReportDetailView,
@@ -20,6 +22,8 @@ from .views import (
     UserListForNutritionistView,
     ArchiveDietPlanView,
     RestoreDietPlanView,
+    NutritionistSelfProfileView,
+    NutritionistChangePasswordView,
     # generate_plan_for_patient,
     # generate_plan_for_patient_view,
 )
@@ -28,10 +32,14 @@ urlpatterns = [
     # ===================================================================
     # Nutritionist - General & Patient Management
     # ===================================================================
+    path('nutritionist/me/profile/', NutritionistSelfProfileView.as_view(), name='nutritionist-self-profile'),
+    path('nutritionist/me/change-password/', NutritionistChangePasswordView.as_view(), name='nutritionist-change-password'),
     path('nutritionist/users/', UserListForNutritionistView.as_view(), name='nutritionist-user-list'),
     path('nutritionist/assign-patient/', AssignPatientAPIView.as_view(), name='nutritionist-assign-patient'),
     path('nutritionist/patients/', AssignedPatientsView.as_view(), name='nutritionist-assigned-patients'),
     path('nutritionist/create-patient/', NutritionistCreatePatientView.as_view(), name='nutritionist-create-patient'),
+    path('nutritionist/download-patient-template/', DownloadPatientTemplateView.as_view(), name='nutritionist-download-patient-template'),
+    path('nutritionist/bulk-upload-patients/', BulkUploadPatientsView.as_view(), name='nutritionist-bulk-upload-patients'),
 
     # ===================================================================
     # Nutritionist - Specific Patient Actions

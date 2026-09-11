@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.utils.timezone import now
 
+from django.http import HttpResponse
 from rest_framework import filters, generics, permissions, serializers, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import NotFound, PermissionDenied
@@ -20,10 +21,10 @@ from rest_framework.views import APIView
 
 from django_filters.rest_framework import DjangoFilterBackend
 
-from subscriptions.models import Plan
+from subscriptions.models import Plan, UserSubscription
 from subscriptions.services import activate_plan_for_user, check_patient_ai_diet_access
 
-from nutritionist.models import PatientAssignment
+from nutritionist.models import PatientAssignment, NutritionistProfile
 from nutritionist.permissions import IsVerifiedNutritionist
 
 from diet.models import DietRecommendation
@@ -57,6 +58,7 @@ from .serializers import (
     UserMealSerializer1,
     DietRecommendationWithPatientSerializer1,
 )
+from .bulk_upload import generate_patient_template_excel, process_patient_bulk_upload
 
 User = get_user_model()
 executor = ThreadPoolExecutor(max_workers=2)
@@ -141,9 +143,9 @@ class NutritionistCreatePatientView(generics.GenericAPIView):
         try:
             with transaction.atomic():
                 user = serializer.save()
-                PatientAssignment.objects.create(
-                    nutritionist=request.user,
-                    patient=user
+                PatientAssignment.objects.update_or_create(
+                    patient=user,
+                    defaults={'nutritionist': request.user}
                 )
                 # ❌ Free plan assign nahi karo
                 # Patient login karke khud plan kharide
@@ -154,6 +156,62 @@ class NutritionistCreatePatientView(generics.GenericAPIView):
                 )
         except Exception as e:
             return Response({"detail": str(e)}, status=400)
+
+
+class DownloadPatientTemplateView(APIView):
+    """
+    Downloads the pre-filled Excel template (.xlsx) with column headers,
+    required field markers, and 10 realistic example patient records.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsNutritionist]
+
+    def get(self, request, *args, **kwargs):
+        try:
+            excel_content = generate_patient_template_excel()
+            response = HttpResponse(
+                excel_content,
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            response['Content-Disposition'] = 'attachment; filename="trackintake_patient_import_template.xlsx"'
+            response['Access-Control-Expose-Headers'] = 'Content-Disposition'
+            return response
+        except Exception as e:
+            return Response({"detail": f"Failed to generate template: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class BulkUploadPatientsView(APIView):
+    """
+    Accepts an Excel (.xlsx/.xls) file and bulk creates up to 1000s of patients,
+    attaches profiles & lab reports, and links them to the requesting nutritionist.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsNutritionist]
+
+    def post(self, request, *args, **kwargs):
+        uploaded_file = request.FILES.get('file')
+        if not uploaded_file:
+            return Response(
+                {"detail": "No file uploaded. Please upload a valid .xlsx Excel file."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not uploaded_file.name.lower().endswith(('.xlsx', '.xls')):
+            return Response(
+                {"detail": "Invalid file format. Only .xlsx or .xls files are supported."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            result = process_patient_bulk_upload(uploaded_file, request.user)
+            if not result.get("success", True):
+                return Response(result, status=status.HTTP_400_BAD_REQUEST)
+
+            status_code = status.HTTP_201_CREATED if result["created_count"] > 0 else status.HTTP_200_OK
+            return Response(result, status=status_code)
+        except Exception as e:
+            return Response(
+                {"detail": f"An error occurred while processing bulk upload: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 # ==============================================================================
@@ -432,7 +490,7 @@ class AllAssignedDietPlansListView(generics.ListAPIView):
 class ApproveOrRejectDietView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
 
-    def post(self, request, pk):
+    def post(self, request, pk=None, *args, **kwargs):
         action = request.data.get("action")
         comment = request.data.get("comment", "")
 
@@ -456,18 +514,26 @@ class ApproveOrRejectDietView(APIView):
 class UpdateRetrainingFlagsView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
 
-    def post(self, request, recommendation_id):
-        notes = request.data.get("notes", "")
-        approved_for_retraining = request.data.get("approved_for_retraining", False)
+    def post(self, request, pk=None, recommendation_id=None, *args, **kwargs):
+        plan_id = pk or recommendation_id
+        notes = request.data.get("notes") or request.data.get("feedback") or request.data.get("comment", "")
+        approved_raw = request.data.get("approved_for_retraining")
+        if approved_raw is None:
+            approved_raw = request.data.get("approved", True)
 
-        if not isinstance(approved_for_retraining, bool):
-            return Response({'error': '"approved_for_retraining" must be a boolean.'}, status=status.HTTP_400_BAD_REQUEST)
+        if isinstance(approved_raw, str):
+            approved_for_retraining = approved_raw.strip().lower() in ["true", "1", "yes"]
+        else:
+            approved_for_retraining = bool(approved_raw)
 
         try:
-            recommendation = DietRecommendation.objects.get(id=recommendation_id)
+            recommendation = DietRecommendation.objects.get(id=plan_id)
+            if not PatientAssignment.objects.filter(nutritionist=request.user, patient=recommendation.user).exists() and recommendation.reviewed_by != request.user:
+                return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
+
             recommendation.nutritionist_retraining_notes = notes
             recommendation.approved_for_retraining = approved_for_retraining
-            recommendation.save()
+            recommendation.save(update_fields=['nutritionist_retraining_notes', 'approved_for_retraining', 'updated_at'])
             return Response({'message': 'Retraining feedback submitted successfully.'}, status=status.HTTP_200_OK)
         except DietRecommendation.DoesNotExist:
             return Response({'error': 'Recommendation not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -526,9 +592,10 @@ class EditDietPlanView(generics.GenericAPIView):
         }
 
     @transaction.atomic
-    def patch(self, request, recommendation_id):
+    def patch(self, request, pk=None, recommendation_id=None, *args, **kwargs):
+        plan_id = pk or recommendation_id
         try:
-            recommendation = DietRecommendation.objects.select_for_update().get(pk=recommendation_id)
+            recommendation = DietRecommendation.objects.select_for_update().get(pk=plan_id)
         except DietRecommendation.DoesNotExist:
             return Response({'error': 'Recommendation not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -587,38 +654,46 @@ class EditDietPlanView(generics.GenericAPIView):
         }, status=status.HTTP_200_OK)
 
 
-class ArchiveDietPlanView(generics.UpdateAPIView):
+class ArchiveDietPlanView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
-    serializer_class = DietRecommendationSerializer
 
-    def get_queryset(self):
-        assigned_patient_ids = PatientAssignment.objects.filter(
-            nutritionist=self.request.user
-        ).values_list('patient_id', flat=True)
-        return DietRecommendation.objects.filter(user_id__in=assigned_patient_ids, is_deleted=False)
+    def patch(self, request, pk=None, *args, **kwargs):
+        return self._archive(request, pk)
 
-    def patch(self, request, *args, **kwargs):
-        instance = self.get_object()
-        instance.is_deleted = True
-        instance.save(update_fields=['is_deleted', 'updated_at'])
-        return Response({"message": "The diet plan has been successfully archived."}, status=status.HTTP_200_OK)
+    def post(self, request, pk=None, *args, **kwargs):
+        return self._archive(request, pk)
+
+    def _archive(self, request, pk):
+        try:
+            plan = DietRecommendation.objects.get(id=pk)
+            if not PatientAssignment.objects.filter(nutritionist=request.user, patient=plan.user).exists() and plan.reviewed_by != request.user:
+                return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
+            plan.is_deleted = True
+            plan.save(update_fields=['is_deleted', 'updated_at'])
+            return Response({"message": "The diet plan has been successfully archived."}, status=status.HTTP_200_OK)
+        except DietRecommendation.DoesNotExist:
+            return Response({'error': 'Diet plan not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
-class RestoreDietPlanView(generics.UpdateAPIView):
+class RestoreDietPlanView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
-    serializer_class = DietRecommendationSerializer
 
-    def get_queryset(self):
-        assigned_patient_ids = PatientAssignment.objects.filter(
-            nutritionist=self.request.user
-        ).values_list('patient_id', flat=True)
-        return DietRecommendation.objects.filter(user_id__in=assigned_patient_ids, is_deleted=True)
+    def patch(self, request, pk=None, *args, **kwargs):
+        return self._restore(request, pk)
 
-    def patch(self, request, *args, **kwargs):
-        instance = self.get_object()
-        instance.is_deleted = False
-        instance.save(update_fields=['is_deleted', 'updated_at'])
-        return Response({"message": "The diet plan has been successfully restored."}, status=status.HTTP_200_OK)
+    def post(self, request, pk=None, *args, **kwargs):
+        return self._restore(request, pk)
+
+    def _restore(self, request, pk):
+        try:
+            plan = DietRecommendation.objects.get(id=pk)
+            if not PatientAssignment.objects.filter(nutritionist=request.user, patient=plan.user).exists() and plan.reviewed_by != request.user:
+                return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
+            plan.is_deleted = False
+            plan.save(update_fields=['is_deleted', 'updated_at'])
+            return Response({"message": "The diet plan has been successfully restored."}, status=status.HTTP_200_OK)
+        except DietRecommendation.DoesNotExist:
+            return Response({'error': 'Diet plan not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
 # ==============================================================================
@@ -714,3 +789,161 @@ class MyAssignedNutritionistView(APIView):
                 {'error': 'You have not been assigned a nutritionist yet.'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+
+# ==============================================================================
+# Nutritionist Self-Profile & Security Views
+# ==============================================================================
+
+class NutritionistSelfProfileView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        nutri_profile, _ = NutritionistProfile.objects.get_or_create(user=user)
+        user_profile = UserProfile.objects.filter(user=user).first()
+
+        assigned_patients_count = PatientAssignment.objects.filter(nutritionist=user).count()
+        total_diet_plans = DietRecommendation.objects.filter(reviewed_by=user).count()
+        active_diet_plans = DietRecommendation.objects.filter(
+            reviewed_by=user,
+            status="approved",
+            is_deleted=False
+        ).count()
+
+        sub = UserSubscription.objects.filter(user=user, is_active=True).select_related("plan").order_by("-created_at").first()
+        sub_data = None
+        if sub:
+            rem_days = max(0, (sub.end_date - timezone.now().date()).days) if sub.end_date else 0
+            is_valid = sub.is_active and (sub.end_date >= timezone.now().date() if sub.end_date else True)
+            sub_data = {
+                "has_plan": True,
+                "plan_name": sub.plan.name if sub.plan else "Active Plan",
+                "price": sub.plan.price if sub.plan else 0,
+                "duration_days": sub.plan.duration_days if sub.plan else 30,
+                "start_date": sub.start_date,
+                "expires_at": sub.end_date,
+                "remaining_days": rem_days,
+                "is_active": is_valid,
+            }
+        else:
+            sub_data = {
+                "has_plan": False,
+                "plan_name": "No Active Subscription",
+                "price": 0,
+                "duration_days": 0,
+                "start_date": None,
+                "expires_at": None,
+                "remaining_days": 0,
+                "is_active": False,
+            }
+
+        return Response({
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "role": user.role,
+                "date_joined": user.date_joined,
+                "is_active": user.is_active,
+            },
+            "nutritionist_profile": {
+                "nutritionist_type": nutri_profile.nutritionist_type,
+                "is_virtual_enabled": nutri_profile.is_virtual_enabled,
+                "is_verified": nutri_profile.is_verified,
+            },
+            "contact_details": {
+                "mobile_number": user_profile.mobile_number if user_profile else "",
+                "gender": user_profile.gender if user_profile else "",
+                "date_of_birth": user_profile.date_of_birth if user_profile else None,
+                "city": user_profile.city if user_profile else "",
+                "country": user_profile.country if user_profile else "",
+            },
+            "practice_metrics": {
+                "assigned_patients_count": assigned_patients_count,
+                "total_diet_plans": total_diet_plans,
+                "active_diet_plans": active_diet_plans,
+            },
+            "subscription": sub_data,
+        }, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        user = request.user
+        data = request.data
+
+        # Update User model
+        full_name = data.get("full_name")
+        if full_name is not None:
+            user.full_name = str(full_name).strip()
+            user.save(update_fields=["full_name"])
+
+        # Update or create UserProfile
+        user_profile, _ = UserProfile.objects.get_or_create(user=user)
+        if "mobile_number" in data:
+            user_profile.mobile_number = data.get("mobile_number") or ""
+        if "gender" in data:
+            user_profile.gender = data.get("gender") or ""
+        if "date_of_birth" in data:
+            dob_raw = data.get("date_of_birth")
+            user_profile.date_of_birth = parse_date(dob_raw) if dob_raw else None
+        if "city" in data:
+            user_profile.city = data.get("city") or ""
+        if "country" in data:
+            user_profile.country = data.get("country") or ""
+        user_profile.save()
+
+        # Update NutritionistProfile
+        nutri_profile, _ = NutritionistProfile.objects.get_or_create(user=user)
+        if "is_virtual_enabled" in data:
+            nutri_profile.is_virtual_enabled = bool(data.get("is_virtual_enabled"))
+            nutri_profile.save(update_fields=["is_virtual_enabled"])
+
+        return Response({"message": "Profile updated successfully."}, status=status.HTTP_200_OK)
+
+
+class NutritionistChangePasswordView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        old_password = request.data.get("old_password")
+        new_password = request.data.get("new_password")
+        confirm_password = request.data.get("confirm_password")
+
+        if not old_password or not new_password or not confirm_password:
+            return Response(
+                {"error": "Current password, new password, and confirmation are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not user.check_password(old_password):
+            return Response(
+                {"error": "Incorrect current password."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if new_password != confirm_password:
+            return Response(
+                {"error": "New password and confirmation do not match."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(new_password) < 8:
+            return Response(
+                {"error": "Password must be at least 8 characters long."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if old_password == new_password:
+            return Response(
+                {"error": "New password must be different from current password."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response(
+            {"message": "Your password has been changed successfully."},
+            status=status.HTTP_200_OK
+        )

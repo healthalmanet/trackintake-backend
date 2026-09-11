@@ -112,8 +112,18 @@ class MessageConsumer(AsyncWebsocketConsumer):
     async def send_message(self, event):
         try:
             await self.send(text_data=json.dumps({
-                "type":    "message",
-                "message": event.get("message"),
+                "type": "message",
+                "id": event.get("id"),
+                "sender_id": event.get("sender_id"),
+                "sender_name": event.get("sender_name"),
+                "sender_email": event.get("sender_email"),
+                "receiver_id": event.get("receiver_id"),
+                "receiver_name": event.get("receiver_name"),
+                "receiver_email": event.get("receiver_email"),
+                "text": event.get("text") or event.get("message"),
+                "message": event.get("message") or event.get("text"),
+                "timestamp": event.get("timestamp"),
+                "is_read": event.get("is_read", False),
                 "sender": {
                     "id":    event.get("sender_id"),
                     "name":  event.get("sender_name"),
