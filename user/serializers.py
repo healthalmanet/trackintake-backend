@@ -170,39 +170,11 @@ class RegisterSerializer(serializers.ModelSerializer):
         cached_token = cache.get(f"verification_token_{email}")
         if not cached_token:
             raise serializers.ValidationError({
-                "token": (
-                    "Verification token expired. Please re-verify your email. "
-                    "Your payment has been saved and will be linked automatically when you complete registration."
-                )
+                "token": "Verification token expired. Please re-verify your email."
             })
         if cached_token != token:
             raise serializers.ValidationError({
                 "token": "Invalid verification token."
-            })
-
-        # ── Step 2: Check free plan or paid payment ───────────────────────────
-        from subscriptions.models import Payment, Plan
-
-        role = data.get('role', 'user')
-        plan_type = 'nutritionist' if role == 'nutritionist' else 'patient'
-
-        # Is there a free (price=0) active plan for this role type?
-        free_plan_exists = Plan.objects.filter(
-            plan_type=plan_type,
-            price=0,
-            is_active=True,
-        ).exists()
-
-        # Is there a successful pre-registration payment for this email?
-        has_paid = Payment.objects.filter(
-            pending_email=email,
-            status="success",
-            user__isnull=True,
-        ).exists()
-
-        if not free_plan_exists and not has_paid:
-            raise serializers.ValidationError({
-                "payment": "Please purchase a plan before completing registration."
             })
 
         return data
