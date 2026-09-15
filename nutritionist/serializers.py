@@ -15,11 +15,14 @@ class UserSerializer(serializers.ModelSerializer):
 
 class UserSerializer1(serializers.ModelSerializer):
     """
-    Serializer for the custom User model.
+    Serializer for the custom User model with profile data attached.
     """
+    goal = serializers.CharField(source='userprofile.goal', read_only=True, default='Not Set')
+    date_of_birth = serializers.DateField(source='userprofile.date_of_birth', read_only=True, default=None)
+
     class Meta:
         model = User
-        fields = ['id', 'email', 'full_name', 'role', 'date_joined', 'is_active']
+        fields = ['id', 'email', 'full_name', 'role', 'date_joined', 'is_active', 'goal', 'date_of_birth']
 
 
 class LabReportSerializer1(serializers.ModelSerializer):

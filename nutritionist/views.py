@@ -92,7 +92,7 @@ class UserListForNutritionistView(generics.ListAPIView):
     ordering_fields = ['date_joined', 'full_name']
 
     def get_queryset(self):
-        return User.objects.filter(role='user').order_by('-date_joined')
+        return User.objects.filter(role='user').select_related('userprofile').order_by('-date_joined')
 
 
 class AssignPatientAPIView(APIView):
@@ -126,7 +126,7 @@ class AssignedPatientsView(generics.ListAPIView):
         assigned_patient_ids = PatientAssignment.objects.filter(
             nutritionist=self.request.user
         ).values_list('patient_id', flat=True)
-        return User.objects.filter(id__in=assigned_patient_ids)
+        return User.objects.filter(id__in=assigned_patient_ids).select_related('userprofile')
 
 
 class NutritionistCreatePatientView(generics.GenericAPIView):
@@ -242,7 +242,7 @@ class PatientProfileDetailView(APIView):
             return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
 
         try:
-            user_profile = UserProfile.objects.get(user_id=patient_id)
+            user_profile = UserProfile.objects.select_related('user').get(user_id=patient_id)
             profile_serializer = self.PatientProfileSerializer1(user_profile)
 
             lab_report_data = None
@@ -340,7 +340,7 @@ class PatientMealLogView(generics.ListAPIView):
         patient_id = self.kwargs['patient_id']
         if not PatientAssignment.objects.filter(nutritionist=self.request.user, patient_id=patient_id).exists():
             raise PermissionDenied("You are not assigned to this patient.")
-        return UserMeal.objects.filter(user_id=patient_id).order_by('-consumed_at')
+        return UserMeal.objects.filter(user_id=patient_id).select_related('food_item').order_by('-consumed_at')
 
 
 class PatientDailySummaryView(APIView):
@@ -467,7 +467,7 @@ class NutritionistPatientDietRecommendationsView(generics.ListAPIView):
         patient_id = self.kwargs['patient_id']
         if not PatientAssignment.objects.filter(nutritionist=self.request.user, patient_id=patient_id).exists():
             raise PermissionDenied("You are not assigned to this patient.")
-        return DietRecommendation.objects.filter(user_id=patient_id).order_by('-created_at')
+        return DietRecommendation.objects.filter(user_id=patient_id).select_related('user', 'reviewed_by').order_by('-created_at')
 
 
 class AllAssignedDietPlansListView(generics.ListAPIView):
@@ -484,7 +484,7 @@ class AllAssignedDietPlansListView(generics.ListAPIView):
         assigned_patient_ids = PatientAssignment.objects.filter(
             nutritionist=self.request.user
         ).values_list('patient_id', flat=True)
-        return DietRecommendation.objects.filter(user_id__in=assigned_patient_ids)
+        return DietRecommendation.objects.filter(user_id__in=assigned_patient_ids).select_related('user', 'reviewed_by')
 
 
 class ApproveOrRejectDietView(APIView):
@@ -804,12 +804,13 @@ class NutritionistSelfProfileView(APIView):
         user_profile = UserProfile.objects.filter(user=user).first()
 
         assigned_patients_count = PatientAssignment.objects.filter(nutritionist=user).count()
-        total_diet_plans = DietRecommendation.objects.filter(reviewed_by=user).count()
-        active_diet_plans = DietRecommendation.objects.filter(
-            reviewed_by=user,
-            status="approved",
-            is_deleted=False
-        ).count()
+        from django.db.models import Count, Q
+        diet_stats = DietRecommendation.objects.filter(reviewed_by=user).aggregate(
+            total=Count('id'),
+            active=Count('id', filter=Q(status="approved", is_deleted=False))
+        )
+        total_diet_plans = diet_stats['total']
+        active_diet_plans = diet_stats['active']
 
         sub = UserSubscription.objects.filter(user=user, is_active=True).select_related("plan").order_by("-created_at").first()
         sub_data = None
