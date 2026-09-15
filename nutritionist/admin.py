@@ -9,6 +9,7 @@ class NutritionistProfileAdmin(admin.ModelAdmin):
         "user",
         "get_full_name",
         "get_email",
+        "get_phone_number",
         "nutritionist_type",
         "is_verified",
         "verified_at",
@@ -22,7 +23,7 @@ class NutritionistProfileAdmin(admin.ModelAdmin):
         "verified_at",
         "created_at",
     )
-    search_fields = ("user__email", "user__full_name")
+    search_fields = ("user__email", "user__full_name", "user__phone_number")
     list_editable = ("is_verified",)
     readonly_fields = ("verified_at", "created_at", "updated_at")
     actions = ["verify_nutritionists", "unverify_nutritionists"]
@@ -34,6 +35,10 @@ class NutritionistProfileAdmin(admin.ModelAdmin):
     @admin.display(description="Email")
     def get_email(self, obj):
         return obj.user.email
+
+    @admin.display(description="Phone Number")
+    def get_phone_number(self, obj):
+        return obj.user.phone_number or "N/A"
 
     @admin.action(description="✅ Verify selected nutritionists")
     def verify_nutritionists(self, request, queryset):

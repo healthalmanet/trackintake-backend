@@ -131,26 +131,15 @@ class VerifyOTPSerializer(serializers.Serializer):
 class RegisterSerializer(serializers.ModelSerializer):
     """
     Final registration serializer.
-
-    Payment gate logic:
-      - FREE plan exists (price=0, is_active=True) for the role type
-        → skip payment entirely, auto-assign the free plan on account creation.
-      - Paid plan exists (successful pending Payment for this email)
-        → link and activate that plan on account creation.
-      - Neither exists
-        → block registration with a clear error.
-
-    Admin control:
-      - Add a free plan (price=0) in Django admin → payment page is skipped for all new users.
-      - Remove/deactivate the free plan → users must purchase before registering.
     """
     full_name = serializers.CharField(required=True)
+    phone_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     verification_token = serializers.CharField(write_only=True)
     role = serializers.CharField(required=False)
 
     class Meta:
         model = User
-        fields = ['email', 'full_name', 'password', 'verification_token', 'role']
+        fields = ['email', 'full_name', 'phone_number', 'password', 'verification_token', 'role']
         extra_kwargs = {'password': {'write_only': True}}
 
     def validate_role(self, value):
@@ -183,23 +172,28 @@ class RegisterSerializer(serializers.ModelSerializer):
         validated_data.pop('verification_token', None)
         email = validated_data['email']  # already lowercased in validate()
         full_name = validated_data['full_name']
+        phone_number = validated_data.get('phone_number', '')
         password = validated_data['password']
         role = validated_data.get('role', 'user')
 
         user = User.objects.create_user(
             email=email,
             full_name=full_name,
+            phone_number=phone_number,
             password=password,
             role=role,
         )
         cache.delete(f"verification_token_{email}")
 
+        # Pre-fill UserProfile mobile_number if user role
+        if role == "user" and phone_number:
+            from userProfile.models import UserProfile
+            UserProfile.objects.get_or_create(user=user, defaults={'mobile_number': phone_number})
+
         from subscriptions.models import Payment, Plan
         from subscriptions.services import activate_plan_for_user
 
         # ── Priority 1: Link a successful paid pending payment ─────────────────
-        # Paid plan takes priority over free plan (in case admin forgot to
-        # deactivate the free plan after a user already paid).
         pending_payment = (
             Payment.objects
             .filter(
@@ -238,4 +232,4 @@ class UserDetailSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = User
-        fields = ('id', 'email', 'full_name', 'role')
+        fields = ('id', 'email', 'full_name', 'phone_number', 'role')
