@@ -86,6 +86,17 @@ class NutritionistProfile(models.Model):
 
     is_virtual_enabled = models.BooleanField(default=False)
     is_verified = models.BooleanField(default=False)
+    verified_at = models.DateTimeField(null=True, blank=True, verbose_name="Verified At")
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        from django.utils import timezone
+        if self.is_verified and not self.verified_at:
+            self.verified_at = timezone.now()
+        elif not self.is_verified:
+            self.verified_at = None
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.user.email} ({self.get_nutritionist_type_display()})"
