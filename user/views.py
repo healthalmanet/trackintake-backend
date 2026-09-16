@@ -54,12 +54,14 @@ class SendOTPView(views.APIView):
     def post(self, request):
         serializer = EmailSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data['email']
+        email = serializer.validated_data['email'].strip().lower()
 
         otp = f"{random.randint(100000, 999999)}"
 
+        # Clear any existing verification token on new OTP request
+        cache.delete(f"verification_token_{email}")
         # Store OTP for 10 min
-        cache.set(f"otp_{email}", otp, timeout=600)
+        cache.set(f"otp_{email}", str(otp).strip(), timeout=600)
 
         print(f"DEBUG: OTP for {email} is {otp}")  # <-- ADDED FOR TERMINAL LOGGING
 
@@ -72,13 +74,16 @@ class SendOTPView(views.APIView):
             <p>It is valid for 10 minutes.</p>
         """
 
-        send_resend_email(
-            to=email,
-            subject="Your TrackEats OTP Code",
-            html=html,
-        )
+        try:
+            send_resend_email(
+                to=email,
+                subject="Your TrackEats OTP Code",
+                html=html,
+            )
+        except Exception as email_err:
+            print(f"WARNING: Failed to send OTP email via Resend: {email_err}")
 
-        return Response({"message": "OTP sent via Resend."}, status=status.HTTP_200_OK)
+        return Response({"message": "OTP sent."}, status=status.HTTP_200_OK)
 
 class VerifyOTPView(views.APIView):
     """
@@ -90,20 +95,29 @@ class VerifyOTPView(views.APIView):
         serializer = VerifyOTPSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        email = serializer.validated_data['email']
-        otp = serializer.validated_data['otp']
+        email = serializer.validated_data['email'].strip().lower()
+        otp = str(serializer.validated_data['otp']).strip()
         cached_otp = cache.get(f"otp_{email}")
+        cached_token = cache.get(f"verification_token_{email}")
 
-        if not cached_otp or cached_otp != otp:
+        print(f"DEBUG: VerifyOTP for email='{email}', submitted_otp='{otp}', cached_otp='{cached_otp}', cached_token={'exists' if cached_token else 'none'}")
+
+        # If already verified and token exists, return it
+        if cached_token and (not cached_otp or str(cached_otp).strip() == otp):
+            return Response(
+                {"message": "Email verified successfully.", "verification_token": cached_token},
+                status=status.HTTP_200_OK
+            )
+
+        if not cached_otp or str(cached_otp).strip() != otp:
             return Response({"error": "Invalid or expired OTP."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # OTP is correct, delete it
-        cache.delete(f"otp_{email}")
-        
         # Issue a secure, short-lived verification token
-        verification_token = secrets.token_urlsafe(32)
-        # Cache the verification token for 10 minutes
-        cache.set(f"verification_token_{email}", verification_token, timeout=600)
+        if not cached_token:
+            verification_token = secrets.token_urlsafe(32)
+            cache.set(f"verification_token_{email}", verification_token, timeout=600)
+        else:
+            verification_token = cached_token
 
         return Response(
             {"message": "Email verified successfully.", "verification_token": verification_token},
@@ -113,8 +127,11 @@ class VerifyOTPView(views.APIView):
 
 
 
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+
 class RegisterView(views.APIView):
     permission_classes = [AllowAny]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
         role = request.data.get("role")
@@ -161,8 +178,9 @@ class RegisterView(views.APIView):
 
         user = serializer.save()
 
-        # Clear the verification token after successful registration
+        # Clear the verification token and OTP cache after successful registration
         cache.delete(f"verification_token_{email}")
+        cache.delete(f"otp_{email}")
 
         # ── Step 3: Link payment & activate plan if payment exists ──────────
         if payment and payment.user is None:

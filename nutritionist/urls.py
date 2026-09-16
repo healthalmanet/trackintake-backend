@@ -24,8 +24,9 @@ from .views import (
     RestoreDietPlanView,
     NutritionistSelfProfileView,
     NutritionistChangePasswordView,
-    # generate_plan_for_patient,
-    # generate_plan_for_patient_view,
+    AdminNutritionistPricingListView,
+    AdminNutritionistPricingApproveView,
+    AdminNutritionistVerifyView,
 )
 
 urlpatterns = [
@@ -34,6 +35,9 @@ urlpatterns = [
     # ===================================================================
     path('nutritionist/me/profile/', NutritionistSelfProfileView.as_view(), name='nutritionist-self-profile'),
     path('nutritionist/me/change-password/', NutritionistChangePasswordView.as_view(), name='nutritionist-change-password'),
+    path('admin/nutritionist-pricing/', AdminNutritionistPricingListView.as_view(), name='admin-nutritionist-pricing-list'),
+    path('admin/nutritionist-pricing/<int:profile_id>/approve/', AdminNutritionistPricingApproveView.as_view(), name='admin-nutritionist-pricing-approve'),
+    path('admin/nutritionist-verify/<int:profile_id>/', AdminNutritionistVerifyView.as_view(), name='admin-nutritionist-verify'),
     path('nutritionist/users/', UserListForNutritionistView.as_view(), name='nutritionist-user-list'),
     path('nutritionist/assign-patient/', AssignPatientAPIView.as_view(), name='nutritionist-assign-patient'),
     path('nutritionist/patients/', AssignedPatientsView.as_view(), name='nutritionist-assigned-patients'),

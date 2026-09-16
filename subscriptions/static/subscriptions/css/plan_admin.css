@@ -1,0 +1,24 @@
+/* Custom styling for Plan Admin */
+.patient-features-group h2, .patient-limits-group h2 {
+    background: linear-gradient(135deg, #059669 0%, #10b981 100%) !important;
+    color: #ffffff !important;
+    font-weight: bold !important;
+    padding: 10px 15px !important;
+    border-radius: 6px 6px 0 0 !important;
+}
+
+.nutritionist-features-group h2, .nutritionist-limits-group h2 {
+    background: linear-gradient(135deg, #0284c7 0%, #0ea5e9 100%) !important;
+    color: #ffffff !important;
+    font-weight: bold !important;
+    padding: 10px 15px !important;
+    border-radius: 6px 6px 0 0 !important;
+}
+
+.patient-features-group, .patient-limits-group, .nutritionist-features-group, .nutritionist-limits-group {
+    transition: all 0.25s ease-in-out;
+    margin-bottom: 20px !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 8px !important;
+    overflow: hidden !important;
+}

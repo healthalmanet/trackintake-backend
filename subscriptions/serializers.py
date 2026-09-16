@@ -12,7 +12,7 @@ class PlanSerializer(serializers.ModelSerializer):
             "price",
             "duration_days",
 
-            # Feature flags
+            # Patient Feature flags
             "meal_log_allowed",
             "water_intake_allowed",
             "weight_tracker_allowed",
@@ -26,7 +26,21 @@ class PlanSerializer(serializers.ModelSerializer):
             "BMI_Calculator_allowed",
             "Fat_Calculator_allowed",
 
-            # Limits
+            # Patient Limits
             "expert_consults",
             "inhouse_consults",
+            "inhouse_consultation_fee",
+            "expert_consultation_fee",
+
+            # Nutritionist Practitioner Feature flags
+            "nutri_ai_diet_allowed",
+            "nutri_manual_diet_allowed",
+            "nutri_bulk_upload_allowed",
+            "nutri_lab_reports_allowed",
+            "nutri_chat_allowed",
+            "nutri_smart_assistant_allowed",
+            "nutri_online_appointment_allowed",
+            "nutri_offline_appointment_allowed",
+            "nutri_export_reports_allowed",
+            "nutri_max_patients",
         ]
