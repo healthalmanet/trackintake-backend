@@ -24,9 +24,42 @@ class FeedbackDisplaySerializer(serializers.ModelSerializer):
 
 # ---------- Slots ----------
 class AvailabilitySlotSerializer(serializers.ModelSerializer):
+    online_price = serializers.SerializerMethodField()
+    offline_price = serializers.SerializerMethodField()
+    offline_payment_required = serializers.SerializerMethodField()
+    offline_location = serializers.SerializerMethodField()
+    price = serializers.SerializerMethodField()
+
     class Meta:
         model = AvailabilitySlot
-        fields = ['id', 'date', 'start_time', 'end_time', 'slot_type', 'is_booked']
+        fields = [
+            'id', 'date', 'start_time', 'end_time', 'slot_type', 'is_booked',
+            'online_price', 'offline_price', 'offline_payment_required', 'offline_location', 'price'
+        ]
+
+    def get_online_price(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return float(profile.online_price) if profile and profile.online_price is not None else 0.0
+
+    def get_offline_price(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return float(profile.offline_price) if profile and profile.offline_price is not None else 0.0
+
+    def get_offline_payment_required(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return profile.offline_payment_required if profile else True
+
+    def get_offline_location(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return profile.offline_location if profile else ""
+
+    def get_price(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        if not profile:
+            return 0.0
+        if obj.slot_type == "IN_PERSON":
+            return float(profile.offline_price or 0.0)
+        return float(profile.online_price or 0.0)
 
 
 class AvailabilitySlotCreateSerializer(serializers.ModelSerializer):
@@ -62,7 +95,7 @@ class AppointmentCreateSerializer(serializers.Serializer):
 
         try:
             slot = AvailabilitySlot.objects.select_related(
-                "nutritionist"
+                "nutritionist", "nutritionist__nutritionist_profile"
             ).get(id=data["slot_id"])
         except AvailabilitySlot.DoesNotExist:
             raise serializers.ValidationError("Invalid slot")
@@ -106,35 +139,49 @@ class AppointmentCreateSerializer(serializers.Serializer):
         data["slot"] = slot
         return data
 
-
-
     def create(self, validated_data):
         user = self.context["request"].user
         slot = validated_data["slot"]
         category = validated_data["appointment_category"]
+        appointment_type = validated_data.get("appointment_type", "VIRTUAL")
         consult_type = "inhouse" if category == "IN_HOUSE" else "expert"
+
+        nutri_profile = getattr(slot.nutritionist, "nutritionist_profile", None)
+
+        # Determine real price from nutritionist profile
+        real_price = 0.0
+        if nutri_profile:
+            if appointment_type == "IN_PERSON":
+                real_price = float(nutri_profile.offline_price or 0.0)
+            else:
+                real_price = float(nutri_profile.online_price or 0.0)
+
+        offline_payment_required = getattr(nutri_profile, "offline_payment_required", True) if nutri_profile else True
+
+        # Check if offline payment is allowed later (at clinic / cash)
+        is_offline_pay_later = (appointment_type == "IN_PERSON" and not offline_payment_required)
 
         from subscriptions.utils import get_active_subscription
         subscription = get_active_subscription(user)
 
-        if not subscription:
-            raise serializers.ValidationError({
-                "consultation_required": True,
-                "message": "No active subscription found. Please purchase a plan or consultation."
-            })
+        consumed_quota = False
 
-        if consult_type == "inhouse" and subscription.remaining_inhouse <= 0:
-            raise serializers.ValidationError({
-                "consultation_required": True,
-                "consult_type": "inhouse",
-                "message": "No in-house consultations remaining. Please pay consultation fee."
-            })
+        # If user has an active subscription with quota, consume quota
+        if subscription:
+            if consult_type == "inhouse" and subscription.remaining_inhouse > 0:
+                consumed_quota = True
+            elif consult_type == "expert" and subscription.remaining_expert > 0:
+                consumed_quota = True
 
-        if consult_type == "expert" and subscription.remaining_expert <= 0:
+        # If user does NOT have quota, AND upfront payment IS required (not offline pay-later and real_price > 0):
+        if not consumed_quota and not is_offline_pay_later and real_price > 0:
             raise serializers.ValidationError({
                 "consultation_required": True,
-                "consult_type": "expert",
-                "message": "No expert consultations remaining. Please pay consultation fee."
+                "consult_type": consult_type,
+                "price": real_price,
+                "appointment_type": appointment_type,
+                "offline_payment_required": offline_payment_required,
+                "message": f"Payment of ₹{real_price} is required to book this {appointment_type.lower()} consultation."
             })
 
         with transaction.atomic():
@@ -168,30 +215,31 @@ class AppointmentCreateSerializer(serializers.Serializer):
             meeting_link = None
 
             # 🔥 ZOOM INTEGRATION (Virtual Consultation Link Generated at Booking Time)
-            try:
-                appointment_start = timezone.make_aware(
-                    datetime.combine(slot.date, slot.start_time)
-                )
+            if appointment_type == "VIRTUAL":
+                try:
+                    appointment_start = timezone.make_aware(
+                        datetime.combine(slot.date, slot.start_time)
+                    )
 
-                duration = int(
-                    (datetime.combine(slot.date, slot.end_time) -
-                    datetime.combine(slot.date, slot.start_time)
-                    ).total_seconds() / 60
-                )
+                    duration = int(
+                        (datetime.combine(slot.date, slot.end_time) -
+                        datetime.combine(slot.date, slot.start_time)
+                        ).total_seconds() / 60
+                    )
 
-                patient_name = getattr(user, "full_name", "") or getattr(user, "email", "Patient")
-                nutritionist_name = getattr(nutritionist, "full_name", "") or "Nutritionist"
+                    patient_name = getattr(user, "full_name", "") or getattr(user, "email", "Patient")
+                    nutritionist_name = getattr(nutritionist, "full_name", "") or "Nutritionist"
 
-                zoom_response = create_zoom_meeting(
-                    topic=f"Consultation: {patient_name} with {nutritionist_name}",
-                    start_time_str=appointment_start.isoformat(),
-                    duration=duration
-                )
+                    zoom_response = create_zoom_meeting(
+                        topic=f"Consultation: {patient_name} with {nutritionist_name}",
+                        start_time_str=appointment_start.isoformat(),
+                        duration=duration
+                    )
 
-                meeting_link = zoom_response.get("join_url")
-            except Exception as e:
-                print(f"⚠️ Zoom link generation error: {e}")
-                meeting_link = f"https://zoom.us/j/trackintake-{slot.id}"
+                    meeting_link = zoom_response.get("join_url")
+                except Exception as e:
+                    print(f"⚠️ Zoom link generation error: {e}")
+                    meeting_link = f"https://zoom.us/j/trackintake-{slot.id}"
 
             # ✅ CREATE APPOINTMENT WITH LINK
             appointment = Appointment.objects.create(
@@ -200,11 +248,14 @@ class AppointmentCreateSerializer(serializers.Serializer):
                 selected_expert=selected_expert,
                 slot=slot,
                 appointment_category=category,
-                appointment_type=validated_data["appointment_type"],
+                appointment_type=appointment_type,
                 assigned_by=assigned_by,
                 meeting_link=meeting_link
             )
-            consume_consultation(user=user, consult_type=consult_type)
+
+            if consumed_quota:
+                consume_consultation(user=user, consult_type=consult_type)
+
             appointment_start = timezone.make_aware(
                 datetime.combine(slot.date, slot.start_time)
             )
@@ -222,9 +273,6 @@ class AppointmentCreateSerializer(serializers.Serializer):
                 )
             ])
         return appointment
-
-
-
 
 
 class AppointmentFeedbackSerializer(serializers.ModelSerializer):
@@ -251,13 +299,13 @@ class AppointmentFeedbackSerializer(serializers.ModelSerializer):
         )
 
 
-
-
-
-
 class NutritionistSlotSerializer(serializers.ModelSerializer):
     patient = serializers.SerializerMethodField()
     appointment = serializers.SerializerMethodField()
+    online_price = serializers.SerializerMethodField()
+    offline_price = serializers.SerializerMethodField()
+    offline_payment_required = serializers.SerializerMethodField()
+    price = serializers.SerializerMethodField()
 
     class Meta:
         model = AvailabilitySlot
@@ -270,6 +318,10 @@ class NutritionistSlotSerializer(serializers.ModelSerializer):
             "is_booked",
             "patient",
             "appointment",
+            "online_price",
+            "offline_price",
+            "offline_payment_required",
+            "price",
         ]
 
     def get_patient(self, obj):
@@ -285,6 +337,7 @@ class NutritionistSlotSerializer(serializers.ModelSerializer):
     def get_appointment(self, obj):
         appt = getattr(obj, "appointment", None)
         if obj.is_booked and appt:
+            feedbacks = FeedbackDisplaySerializer(appt.feedbacks.all(), many=True).data
             return {
                 "id": appt.id,
                 "status": appt.status,
@@ -292,8 +345,31 @@ class NutritionistSlotSerializer(serializers.ModelSerializer):
                 "category": appt.appointment_category,
                 "assigned_by": appt.assigned_by,
                 "meeting_link": appt.meeting_link,
+                "notes": getattr(appt, "notes", ""),
+                "instructions": getattr(appt, "instructions", ""),
+                "feedbacks": feedbacks,
             }
         return None
+
+    def get_online_price(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return float(profile.online_price) if profile and profile.online_price is not None else 0.0
+
+    def get_offline_price(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return float(profile.offline_price) if profile and profile.offline_price is not None else 0.0
+
+    def get_offline_payment_required(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return profile.offline_payment_required if profile else True
+
+    def get_price(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        if not profile:
+            return 0.0
+        if obj.slot_type == "IN_PERSON":
+            return float(profile.offline_price or 0.0)
+        return float(profile.online_price or 0.0)
 
 
 class AppointmentListSerializer(serializers.ModelSerializer):
@@ -301,22 +377,153 @@ class AppointmentListSerializer(serializers.ModelSerializer):
     nutritionist_name = serializers.CharField(
         source="nutritionist.full_name", read_only=True
     )
-
+    nutritionist_email = serializers.CharField(
+        source="nutritionist.email", read_only=True
+    )
+    patient_id = serializers.IntegerField(
+        source="patient.id", read_only=True
+    )
+    patient_name = serializers.CharField(
+        source="patient.full_name", read_only=True
+    )
+    patient_email = serializers.CharField(
+        source="patient.email", read_only=True
+    )
+    offline_location = serializers.SerializerMethodField()
+    online_price = serializers.SerializerMethodField()
+    offline_price = serializers.SerializerMethodField()
+    price = serializers.SerializerMethodField()
+    offline_payment_required = serializers.SerializerMethodField()
     feedbacks = FeedbackDisplaySerializer(many=True, read_only=True)
 
     class Meta:
         model = Appointment
         fields = [
-                "id",
-                "appointment_category",
-                "appointment_type",
-                "status",
-                "assigned_by",
-                "meeting_link",
-                "created_at",
-                "nutritionist_name",
-                "slot",
+            "id",
+            "appointment_category",
+            "appointment_type",
+            "status",
+            "assigned_by",
+            "meeting_link",
+            "notes",
+            "instructions",
+            "created_at",
+            "patient_id",
+            "patient_name",
+            "patient_email",
+            "nutritionist_name",
+            "nutritionist_email",
+            "offline_location",
+            "online_price",
+            "offline_price",
+            "price",
+            "offline_payment_required",
+            "slot",
+            "feedbacks",
+        ]
 
-                # ✅ ADD THIS
-                "feedbacks",
-            ]
+    def get_offline_location(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return profile.offline_location if profile else ""
+
+    def get_online_price(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return float(profile.online_price) if profile and profile.online_price is not None else 0.0
+
+    def get_offline_price(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return float(profile.offline_price) if profile and profile.offline_price is not None else 0.0
+
+    def get_price(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        if not profile:
+            return 0.0
+        if obj.appointment_type == "IN_PERSON":
+            return float(profile.offline_price or 0.0)
+        return float(profile.online_price or 0.0)
+
+    def get_offline_payment_required(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return profile.offline_payment_required if profile else True
+
+
+class AppointmentDetailSerializer(serializers.ModelSerializer):
+    slot = AvailabilitySlotSerializer()
+    patient_details = serializers.SerializerMethodField()
+    nutritionist_details = serializers.SerializerMethodField()
+    feedbacks = FeedbackDisplaySerializer(many=True, read_only=True)
+    price = serializers.SerializerMethodField()
+    offline_payment_required = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Appointment
+        fields = [
+            "id",
+            "appointment_category",
+            "appointment_type",
+            "status",
+            "assigned_by",
+            "meeting_link",
+            "notes",
+            "instructions",
+            "created_at",
+            "slot",
+            "price",
+            "offline_payment_required",
+            "patient_details",
+            "nutritionist_details",
+            "feedbacks",
+        ]
+
+    def get_price(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        if not profile:
+            return 0.0
+        if obj.appointment_type == "IN_PERSON":
+            return float(profile.offline_price or 0.0)
+        return float(profile.online_price or 0.0)
+
+    def get_offline_payment_required(self, obj):
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        return profile.offline_payment_required if profile else True
+
+    def get_patient_details(self, obj):
+        p = obj.patient
+        profile = getattr(p, "user_profile", None) or getattr(p, "profile", None)
+        return {
+            "id": p.id,
+            "name": p.full_name or p.username,
+            "email": p.email,
+            "phone": getattr(profile, "phone_number", None) or getattr(p, "phone_number", "") or "",
+            "gender": getattr(profile, "gender", "") or "",
+            "age": getattr(profile, "age", "") or "",
+            "goal": getattr(profile, "health_goal", "") or getattr(profile, "goal", "") or "",
+            "allergies": getattr(profile, "allergies", []) if profile else [],
+            "medical_conditions": getattr(profile, "medical_conditions", []) if profile else [],
+        }
+
+    def get_nutritionist_details(self, obj):
+        n = obj.nutritionist
+        profile = getattr(n, "nutritionist_profile", None)
+        return {
+            "id": n.id,
+            "name": n.full_name or n.username,
+            "email": n.email,
+            "professional_title": getattr(profile, "professional_title", "Clinical Nutritionist") if profile else "Clinical Nutritionist",
+            "qualification": getattr(profile, "qualification", "") if profile else "",
+            "years_of_experience": getattr(profile, "years_of_experience", 0) if profile else 0,
+            "offline_location": getattr(profile, "offline_location", "") if profile else "",
+            "online_price": float(profile.online_price) if profile and profile.online_price is not None else 0.0,
+            "offline_price": float(profile.offline_price) if profile and profile.offline_price is not None else 0.0,
+        }
+
+
+class AppointmentNotesUpdateSerializer(serializers.ModelSerializer):
+    notes = serializers.CharField(required=False, allow_blank=True)
+    instructions = serializers.CharField(required=False, allow_blank=True)
+
+    class Meta:
+        model = Appointment
+        fields = ["notes", "instructions"]
+
+
