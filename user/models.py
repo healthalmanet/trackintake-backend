@@ -24,17 +24,17 @@ from django.conf import settings  # ✅ Use this for referencing the user model
 
 class UserManager(BaseUserManager):
     # Add 'role' as an argument with a default value
-    def create_user(self, email, full_name, password=None, role="user"):
+    def create_user(self, email, full_name, password=None, role="user", phone_number=None):
         if not email:
             raise ValueError("Email is required")
         if not full_name:
             raise ValueError("Full name is required")
         
-        # Add the 'role' when creating the model instance
         user = self.model(
             email=self.normalize_email(email).lower(),
             full_name=full_name,
-            role=role  # <-- ADD THIS LINE
+            phone_number=phone_number,
+            role=role
         )
 
         user.set_password(password)
@@ -42,12 +42,11 @@ class UserManager(BaseUserManager):
         return user
 
     def create_superuser(self, email, full_name, password=None):
-        # When creating a superuser, we can explicitly set the role
         user = self.create_user(
             email,
             full_name,
             password,
-            role="admin"  # <-- Recommended: Explicitly set the superuser role
+            role="admin"
         )
         user.is_admin = True
         user.save(using=self._db)
@@ -68,6 +67,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     email = models.EmailField(unique=True)
     full_name = models.CharField(max_length=255)
+    phone_number = models.CharField(max_length=20, blank=True, null=True)
     date_joined = models.DateTimeField(default=timezone.now)
     is_active = models.BooleanField(default=True)
     is_admin = models.BooleanField(default=False)

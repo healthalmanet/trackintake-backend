@@ -303,6 +303,10 @@ class Appointment(models.Model):
         db_index=True,
     )
 
+    # 📝 Clinical notes / observations and dietary advice given by nutritionist
+    notes = models.TextField(blank=True, default="")
+    instructions = models.TextField(blank=True, default="")
+
     created_at = models.DateTimeField(
         auto_now_add=True,
         db_index=True,

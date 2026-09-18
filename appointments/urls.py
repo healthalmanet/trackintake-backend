@@ -87,36 +87,39 @@ from .views import (
     AvailableSlotsView,
     BookAppointmentView,
     MyAppointmentsView,
+    AppointmentDetailView,
+    AppointmentNotesUpdateView,
+    PatientAppointmentHistoryView,
     NutritionistAddAvailabilityView,
     NutritionistMySlotsView,
-    NutritionistDeleteSlotView,CancelAppointmentView,
-    DeleteSlotView,MyInHouseNutritionistView,ExpertNutritionistListView,
-    SubmitFeedbackView
+    NutritionistDeleteSlotView,
+    CancelAppointmentView,
+    DeleteSlotView,
+    MyInHouseNutritionistView,
+    ExpertNutritionistListView,
+    SubmitFeedbackView,
 )
 
 urlpatterns = [
-    # Patient
+    # Patient & General Appointment
     path("nutritionist/<int:nutritionist_id>/slots/", AvailableSlotsView.as_view()),
     path("book/", BookAppointmentView.as_view()),
     path("my/", MyAppointmentsView.as_view()),
+    path("<int:pk>/", AppointmentDetailView.as_view(), name="appointment-detail"),
+    path("<int:pk>/notes/", AppointmentNotesUpdateView.as_view(), name="appointment-notes"),
+    path("patient-history/<int:patient_id>/", PatientAppointmentHistoryView.as_view(), name="patient-appointment-history"),
 
     # Nutritionist
     path("nutritionist/add-availability/", NutritionistAddAvailabilityView.as_view()),
     path("nutritionist/me/slots/", NutritionistMySlotsView.as_view()),
     path("nutritionist/me/slots/<int:pk>/", NutritionistDeleteSlotView.as_view()),
-    # appointments/urls.py
-    path("appointments/<int:pk>/cancel/", CancelAppointmentView.as_view()),
     path("nutritionist/my-slots/", NutritionistMySlotsView.as_view()),
     path("nutritionist/slots/<int:pk>/delete/", DeleteSlotView.as_view()),
-    path(
-    "me/in-house-nutritionist/",
-    MyInHouseNutritionistView.as_view()),
-    path(
-        "expert-nutritionists/",
-        ExpertNutritionistListView.as_view(),
-        name="expert-nutritionists",),
-    path("<int:appointment_id>/feedback/", SubmitFeedbackView.as_view(), name="submit-feedback")
+    path("me/in-house-nutritionist/", MyInHouseNutritionistView.as_view()),
+    path("expert-nutritionists/", ExpertNutritionistListView.as_view(), name="expert-nutritionists"),
 
-
-
+    # Actions
+    path("appointments/<int:pk>/cancel/", CancelAppointmentView.as_view()),
+    path("<int:pk>/cancel/", CancelAppointmentView.as_view()),
+    path("<int:appointment_id>/feedback/", SubmitFeedbackView.as_view(), name="submit-feedback"),
 ]

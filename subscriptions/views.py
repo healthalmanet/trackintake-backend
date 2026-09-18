@@ -460,7 +460,7 @@ class VerifyPaymentView(APIView):
 
         # ✅ 1. Consultation fee payment
         if notes.get("type") == "consultation_fee":
-            consult_type = notes.get("consult_type")
+            consult_type = notes.get("consult_type", "inhouse")
             user_id = notes.get("user_id") or (payment.user_id if payment else None)
 
             subscription = UserSubscription.objects.filter(
@@ -489,9 +489,32 @@ class VerifyPaymentView(APIView):
                     "remaining_expert": sub_locked.remaining_expert
                 })
             else:
+                from .models import Plan
+                from datetime import timedelta
+                base_plan = Plan.objects.filter(target_role="patient").order_by("price").first() or Plan.objects.first()
+                if not base_plan:
+                    base_plan = Plan.objects.create(
+                        name="Standard Consultation",
+                        price=0,
+                        duration_days=30,
+                        target_role="patient"
+                    )
+                new_sub = UserSubscription.objects.create(
+                    user_id=user_id,
+                    plan=base_plan,
+                    start_date=timezone.now().date(),
+                    end_date=timezone.now().date() + timedelta(days=30),
+                    remaining_inhouse=1 if consult_type == "inhouse" else 0,
+                    remaining_expert=1 if consult_type == "expert" else 0,
+                    is_active=True
+                )
                 return Response({
-                    "error": "No active subscription found for user to credit consultation."
-                }, status=400)
+                    "status": "ok",
+                    "type": "consultation_fee",
+                    "consult_type": consult_type,
+                    "remaining_inhouse": new_sub.remaining_inhouse,
+                    "remaining_expert": new_sub.remaining_expert
+                })
 
         # ✅ 2. Normal plan payment
         if payment and payment.user:
@@ -505,29 +528,65 @@ class PayConsultationFeeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        consult_type = request.data.get("consult_type")
+        consult_type = request.data.get("consult_type", "inhouse")
+        slot_id = request.data.get("slot_id")
+        price_override = request.data.get("price")
+        appointment_type = request.data.get("appointment_type", "VIRTUAL")
 
-        if consult_type not in ["inhouse", "expert"]:
-            return Response({"error": "Invalid consult_type"}, status=400)
-
-        # ✅ User ki active subscription se plan lo
+        from appointments.models import AvailabilitySlot
         from subscriptions.utils import get_active_subscription
+        from .models import Plan
+
         subscription = get_active_subscription(request.user)
 
-        if not subscription:
-            return Response({"error": "No active subscription"}, status=400)
+        amount = None
 
-        # ✅ Plan se fee lo
-        if consult_type == "inhouse":
-            amount = subscription.plan.inhouse_consultation_fee
+        # 1. Try to get price directly from slot
+        if slot_id:
+            try:
+                slot = AvailabilitySlot.objects.select_related(
+                    "nutritionist", "nutritionist__nutritionist_profile"
+                ).get(id=slot_id)
+                nutri_profile = getattr(slot.nutritionist, "nutritionist_profile", None)
+                if nutri_profile:
+                    if appointment_type == "IN_PERSON":
+                        amount = float(nutri_profile.offline_price or 0)
+                    else:
+                        amount = float(nutri_profile.online_price or 0)
+            except AvailabilitySlot.DoesNotExist:
+                pass
+
+        # 2. Try price override passed from frontend
+        if (amount is None or amount <= 0) and price_override is not None:
+            try:
+                amount = float(price_override)
+            except (ValueError, TypeError):
+                pass
+
+        # 3. Fallback to user subscription plan consultation fee
+        if amount is None or amount <= 0:
+            if subscription and subscription.plan:
+                if consult_type == "inhouse":
+                    amount = float(subscription.plan.inhouse_consultation_fee or 200)
+                else:
+                    amount = float(subscription.plan.expert_consultation_fee or 500)
+            else:
+                amount = 200.0 if consult_type == "inhouse" else 500.0
+
+        int_amount = int(amount)
+
+        # Base plan for billing payment record
+        plan_record = None
+        if subscription and subscription.plan:
+            plan_record = subscription.plan
         else:
-            amount = subscription.plan.expert_consultation_fee
+            plan_record = Plan.objects.filter(target_role="patient").order_by("price").first() or Plan.objects.first()
 
         client = razorpay.Client(
             auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
         )
         order = client.order.create({
-            "amount": amount * 100,
+            "amount": int_amount * 100,
             "currency": "INR",
             "payment_capture": 1,
             "notes": {
@@ -540,15 +599,16 @@ class PayConsultationFeeView(APIView):
         # ✅ Create pending payment record in DB for reliable tracking and billing history
         Payment.objects.create(
             user=request.user,
-            plan=subscription.plan,
-            amount=amount,
+            plan=plan_record,
+            amount=int_amount,
             razorpay_order_id=order["id"],
             status="pending",
         )
 
         return Response({
             "order_id": order["id"],
-            "amount": amount * 100,
+            "amount": int_amount * 100,
+            "display_amount": int_amount,
             "currency": "INR",
             "key": settings.RAZORPAY_KEY_ID,
             "consult_type": consult_type

@@ -245,12 +245,12 @@ class CustomUserAdmin(BaseUserAdmin):
     form = CustomUserChangeForm
     add_form = CustomUserCreationForm
 
-    list_display = ("email", "full_name", "role", "date_joined", "is_active", "is_admin")
+    list_display = ("email", "full_name", "phone_number", "role", "date_joined", "is_active", "is_admin")
     list_filter = ("role", "is_admin", "date_joined")
 
     fieldsets = (
         (None, {"fields": ("email", "password")}),
-        ("Personal Info", {"fields": ("full_name",)}),
+        ("Personal Info", {"fields": ("full_name", "phone_number")}),
         ("Permissions", {
             "fields": (
                 "role",
@@ -266,11 +266,11 @@ class CustomUserAdmin(BaseUserAdmin):
     add_fieldsets = (
         (None, {
             "classes": ("wide",),
-            "fields": ("email", "full_name", "role", "password1", "password2", "groups"),
+            "fields": ("email", "full_name", "phone_number", "role", "password1", "password2", "groups"),
         }),
     )
 
-    search_fields = ("email", "full_name")
+    search_fields = ("email", "full_name", "phone_number")
     ordering = ("-date_joined",)
     filter_horizontal = ("groups", "user_permissions")  # ✅ Nice multi-select UI
     readonly_fields = ('date_joined', 'last_login')
@@ -359,7 +359,6 @@ admin.site.register(UserProfile)
 admin.site.register(LabReport)
 admin.site.register(UserMeal)
 admin.site.register(CustomReminder)
-admin.site.register(NutritionistProfile)
 admin.site.register(DietRecommendation)
 admin.site.register(Blog)
 admin.site.register(Message)

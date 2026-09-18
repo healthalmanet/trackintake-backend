@@ -12,11 +12,17 @@ logger = logging.getLogger(__name__)
 def check_pathyatech_subscription(email):
     """
     Queries PathyaTech backend to verify if the patient has an active paid subscription
-    and retrieves their plan's allowed feature gates.
+    and retrieves their plan's allowed feature gates. Uses Django cache to prevent slowness.
     """
     if not email:
         return {"has_active_plan": False}
         
+    from django.core.cache import cache
+    cache_key = f"pathyatech_sub_{email}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     url = f"{settings.PATHYATECH_BACKEND_URL.rstrip('/')}/api/subscriptions/patient-active/"
     headers = {
         "Authorization": f"Bearer {settings.PATHYATECH_API_SECRET}"
@@ -26,15 +32,19 @@ def check_pathyatech_subscription(email):
     }
     
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=15)
+        response = requests.get(url, headers=headers, params=params, timeout=3)
         if response.status_code == 200:
-            return response.json()
+            res_data = response.json()
+            cache.set(cache_key, res_data, timeout=120)  # cache for 2 minutes
+            return res_data
         else:
             logger.error(f"PathyaTech active check returned status code {response.status_code}: {response.text}")
     except Exception as e:
         logger.error(f"Failed to query PathyaTech subscription status for {email}: {e}")
         
-    return {"has_active_plan": False}
+    fallback = {"has_active_plan": False}
+    cache.set(cache_key, fallback, timeout=30)  # cache negative response briefly to prevent log spam/slowness
+    return fallback
 
 
 def get_active_subscription(user):

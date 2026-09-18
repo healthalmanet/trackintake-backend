@@ -54,12 +54,14 @@ class SendOTPView(views.APIView):
     def post(self, request):
         serializer = EmailSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data['email']
+        email = serializer.validated_data['email'].strip().lower()
 
         otp = f"{random.randint(100000, 999999)}"
 
-        # Store OTP for 5 min
-        cache.set(f"otp_{email}", otp, timeout=300)
+        # Clear any existing verification token on new OTP request
+        cache.delete(f"verification_token_{email}")
+        # Store OTP for 10 min
+        cache.set(f"otp_{email}", str(otp).strip(), timeout=600)
 
         print(f"DEBUG: OTP for {email} is {otp}")  # <-- ADDED FOR TERMINAL LOGGING
 
@@ -69,16 +71,19 @@ class SendOTPView(views.APIView):
         html = f"""
             <h2>Your TrackEats OTP</h2>
             <p>Your OTP is: <strong>{otp}</strong></p>
-            <p>It is valid for 5 minutes.</p>
+            <p>It is valid for 10 minutes.</p>
         """
 
-        send_resend_email(
-            to=email,
-            subject="Your TrackEats OTP Code",
-            html=html,
-        )
+        try:
+            send_resend_email(
+                to=email,
+                subject="Your TrackEats OTP Code",
+                html=html,
+            )
+        except Exception as email_err:
+            print(f"WARNING: Failed to send OTP email via Resend: {email_err}")
 
-        return Response({"message": "OTP sent via Resend."}, status=status.HTTP_200_OK)
+        return Response({"message": "OTP sent."}, status=status.HTTP_200_OK)
 
 class VerifyOTPView(views.APIView):
     """
@@ -90,20 +95,29 @@ class VerifyOTPView(views.APIView):
         serializer = VerifyOTPSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        email = serializer.validated_data['email']
-        otp = serializer.validated_data['otp']
+        email = serializer.validated_data['email'].strip().lower()
+        otp = str(serializer.validated_data['otp']).strip()
         cached_otp = cache.get(f"otp_{email}")
+        cached_token = cache.get(f"verification_token_{email}")
 
-        if not cached_otp or cached_otp != otp:
+        print(f"DEBUG: VerifyOTP for email='{email}', submitted_otp='{otp}', cached_otp='{cached_otp}', cached_token={'exists' if cached_token else 'none'}")
+
+        # If already verified and token exists, return it
+        if cached_token and (not cached_otp or str(cached_otp).strip() == otp):
+            return Response(
+                {"message": "Email verified successfully.", "verification_token": cached_token},
+                status=status.HTTP_200_OK
+            )
+
+        if not cached_otp or str(cached_otp).strip() != otp:
             return Response({"error": "Invalid or expired OTP."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # OTP is correct, delete it
-        cache.delete(f"otp_{email}")
-        
         # Issue a secure, short-lived verification token
-        verification_token = secrets.token_urlsafe(32)
-        # Cache the verification token for 10 minutes
-        cache.set(f"verification_token_{email}", verification_token, timeout=600)
+        if not cached_token:
+            verification_token = secrets.token_urlsafe(32)
+            cache.set(f"verification_token_{email}", verification_token, timeout=600)
+        else:
+            verification_token = cached_token
 
         return Response(
             {"message": "Email verified successfully.", "verification_token": verification_token},
@@ -113,8 +127,11 @@ class VerifyOTPView(views.APIView):
 
 
 
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+
 class RegisterView(views.APIView):
     permission_classes = [AllowAny]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
         role = request.data.get("role")
@@ -122,51 +139,28 @@ class RegisterView(views.APIView):
         razorpay_payment_id = request.data.get("razorpay_payment_id")
         razorpay_signature = request.data.get("razorpay_signature")
 
-        # ── Step 1: Verify payment BEFORE creating user (nutritionist only) ──
+        # Optional payment verification if payment fields provided
         payment = None
-        if role == "nutritionist":
-            if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature]):
-                return Response(
-                    {"message": "Payment is required for nutritionist registration."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            # Verify Razorpay signature
+        if all([razorpay_order_id, razorpay_payment_id, razorpay_signature]):
             generated_sig = hmac.new(
                 settings.RAZORPAY_KEY_SECRET.encode(),
                 f"{razorpay_order_id}|{razorpay_payment_id}".encode(),
                 hashlib.sha256,
             ).hexdigest()
 
-            if not hmac.compare_digest(generated_sig, razorpay_signature):
-                return Response(
-                    {"message": "Payment verification failed."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            if hmac.compare_digest(generated_sig, razorpay_signature):
+                try:
+                    payment = Payment.objects.get(
+                        razorpay_order_id=razorpay_order_id,
+                        status__in=["pending", "success"],
+                    )
+                    if payment.status == "pending":
+                        payment.status = "success"
+                        payment.save(update_fields=["status"])
+                except Payment.DoesNotExist:
+                    pass
 
-            try:
-                payment = Payment.objects.get(
-                    razorpay_order_id=razorpay_order_id,
-                    status__in=["pending", "success"],
-                )
-                # ✅ Mark as success immediately after verification to satisfy serializer
-                if payment.status == "pending":
-                    payment.status = "success"
-                    payment.save(update_fields=["status"])
-            except Payment.DoesNotExist:
-                return Response(
-                    {"message": "Payment record not found or already used."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            # If the webhook already linked this payment to a different user, block reuse
-            if payment.user is not None:
-                return Response(
-                    {"message": "This payment has already been used for another account."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        # ── Step 2: Verify OTP token ──────────────────────────────────────────
+        # ── Step 1: Verify OTP token ──────────────────────────────────────────
         email = request.data.get("email", "").strip().lower()
         verification_token = request.data.get("verification_token")
         cached_token = cache.get(f"verification_token_{email}")
@@ -177,25 +171,25 @@ class RegisterView(views.APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ── Step 3: Validate & create user via RegisterSerializer ─────────────
+        # ── Step 2: Validate & create user via RegisterSerializer ─────────────
         serializer = RegisterSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         user = serializer.save()
 
-        # Clear the verification token after successful registration
+        # Clear the verification token and OTP cache after successful registration
         cache.delete(f"verification_token_{email}")
+        cache.delete(f"otp_{email}")
 
-        # ── Step 4: Link payment & activate plan (nutritionist only) ──────────
-        if role == "nutritionist" and payment:
+        # ── Step 3: Link payment & activate plan if payment exists ──────────
+        if payment and payment.user is None:
             payment.user = user
             if razorpay_payment_id:
                 payment.razorpay_payment_id = razorpay_payment_id
             payment.status = "success"
             payment.save()
 
-            # Only activate if webhook hasn't already done it
             from subscriptions.models import UserSubscription
             already_active = UserSubscription.objects.filter(user=user, is_active=True).exists()
             if not already_active:

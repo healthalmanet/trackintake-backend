@@ -121,18 +121,27 @@ def send_message_notification(sender_or_message, receiver=None, text=None):
         message_obj = None
 
     channel_layer = get_channel_layer()
-    email_text = f"📩 New message from {sender.full_name or sender.email}: {text}"
+    email_text = f"Hello {receiver.full_name or receiver.email},\n\n{text}\n\nBest regards,\nTrackIntake Team"
+
+    email_subject = f"📩 New message from {sender.full_name or sender.email}" if sender else "TrackIntake Notification"
+    text_upper = (text or "").upper()
+    if "VERIFIED" in text_upper:
+        email_subject = "🎉 TrackIntake - Your Practitioner Account is Officially Verified!"
+    elif "APPROVED" in text_upper:
+        email_subject = "🎉 TrackIntake - Your Appointment Pricing has been Approved!"
+    elif "REJECTED" in text_upper:
+        email_subject = "⚠️ TrackIntake - Update Regarding Your Practitioner Account"
 
     # Gmail
     try:
         send_mail(
-            subject="New Message Notification",
+            subject=email_subject,
             message=email_text,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[receiver.email],
             fail_silently=True,
         )
-        logger.info(f"📧 Email sent to {receiver.email}")
+        logger.info(f"📧 Email sent to {receiver.email} with subject: {email_subject}")
     except Exception as e:
         logger.error(f"❌ Email failed: {e}")
 

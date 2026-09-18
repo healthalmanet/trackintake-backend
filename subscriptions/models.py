@@ -31,8 +31,16 @@ class Plan(models.Model):
     ai_diet_allowed = models.BooleanField(default=False)
     BMI_Calculator_allowed = models.BooleanField(default=False)
     Fat_Calculator_allowed = models.BooleanField(default=False)
-    expert_consults = models.PositiveIntegerField(default=0)
-    inhouse_consults = models.PositiveIntegerField(default=0)
+    expert_consults = models.PositiveIntegerField(
+        default=0,
+        verbose_name="Expert Consultations Count",
+        help_text="Number of expert consultations included (0 = Unlimited)"
+    )
+    inhouse_consults = models.PositiveIntegerField(
+        default=0,
+        verbose_name="In-House Consultations Count",
+        help_text="Number of in-house consultations included (0 = Unlimited)"
+    )
     meal_log_allowed = models.BooleanField(default=False)
     water_intake_allowed = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
@@ -43,6 +51,58 @@ class Plan(models.Model):
     expert_consultation_fee = models.PositiveIntegerField(
         default=500,
         help_text="Fee in rupees for single expert consultation"
+    )
+
+    # ── Nutritionist Practitioner Feature Flags ──────────────────────────────
+    nutri_ai_diet_allowed = models.BooleanField(
+        default=True,
+        verbose_name="AI Assistant / Smart AI Diet Formulation",
+        help_text="Allows AI-powered automated diet formulations for patients"
+    )
+    nutri_manual_diet_allowed = models.BooleanField(
+        default=True,
+        verbose_name="Manual Diet Formulation & Editing",
+        help_text="Allows custom manual diet plan formulation & template editing"
+    )
+    nutri_bulk_upload_allowed = models.BooleanField(
+        default=False,
+        verbose_name="Bulk Patient Upload (CSV/Excel)",
+        help_text="Allows batch importing patients via CSV/Excel template"
+    )
+    nutri_lab_reports_allowed = models.BooleanField(
+        default=True,
+        verbose_name="Lab Report Uploads & Biomarker Tracking",
+        help_text="Allows uploading and analyzing patient lab tests and health reports"
+    )
+    nutri_chat_allowed = models.BooleanField(
+        default=True,
+        verbose_name="Direct Real-time Patient Messaging",
+        help_text="Allows direct real-time chat with assigned patients"
+    )
+    nutri_smart_assistant_allowed = models.BooleanField(
+        default=True,
+        verbose_name="Smart Assistant (Nutro AI Calorie & Nutrition)",
+        help_text="Allows access to Nutro Smart Calorie Assistant"
+    )
+    nutri_online_appointment_allowed = models.BooleanField(
+        default=True,
+        verbose_name="Online Video Appointments",
+        help_text="Allows offering and accepting virtual video consultation appointments"
+    )
+    nutri_offline_appointment_allowed = models.BooleanField(
+        default=True,
+        verbose_name="Offline Clinic Appointments",
+        help_text="Allows in-person clinic appointments and scheduling"
+    )
+    nutri_export_reports_allowed = models.BooleanField(
+        default=False,
+        verbose_name="Diet Chart PDF Export & Advanced Analytics",
+        help_text="Allows generating PDF reports and advanced clinical analytics"
+    )
+    nutri_max_patients = models.PositiveIntegerField(
+        default=25,
+        verbose_name="Max Active Patients Capacity",
+        help_text="Maximum number of active assigned patients allowed (0 = Unlimited)"
     )
 
     def __str__(self):

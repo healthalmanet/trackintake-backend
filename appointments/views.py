@@ -272,7 +272,7 @@
 #             ).data,
 #         })
 
-from rest_framework.generics import ListAPIView, CreateAPIView, DestroyAPIView
+from rest_framework.generics import ListAPIView, CreateAPIView, DestroyAPIView, RetrieveAPIView
 from rest_framework.permissions import IsAuthenticated
 from .models import AvailabilitySlot, Appointment
 from .serializers import (
@@ -280,7 +280,10 @@ from .serializers import (
     AvailabilitySlotCreateSerializer,
     AppointmentCreateSerializer,
     AppointmentListSerializer,
-    NutritionistSlotSerializer,AppointmentFeedbackSerializer,
+    AppointmentDetailSerializer,
+    AppointmentNotesUpdateSerializer,
+    NutritionistSlotSerializer,
+    AppointmentFeedbackSerializer,
 )
 from rest_framework import status
 from django.shortcuts import get_object_or_404
@@ -307,11 +310,26 @@ class ExpertNutritionistListView(APIView):
         experts = User.objects.filter(
             role="nutritionist",
             nutritionist_profile__nutritionist_type=NutritionistProfile.NutritionistType.EXPERT
-        )
-        data = [
-            {"id": u.id, "name": u.full_name}
-            for u in experts
-        ]
+        ).select_related("nutritionist_profile")
+        
+        data = []
+        for u in experts:
+            profile = getattr(u, "nutritionist_profile", None)
+            data.append({
+                "id": u.id,
+                "name": u.full_name or u.username,
+                "email": u.email,
+                "professional_title": profile.professional_title if profile else "Clinical Nutritionist",
+                "qualification": profile.qualification if profile else "",
+                "years_of_experience": profile.years_of_experience if profile else 0,
+                "specializations": profile.specializations if profile else [],
+                "is_online_available": profile.is_online_available if profile else True,
+                "is_offline_available": profile.is_offline_available if profile else False,
+                "online_price": float(profile.online_price) if profile and profile.online_price is not None else 0.0,
+                "offline_price": float(profile.offline_price) if profile and profile.offline_price is not None else 0.0,
+                "offline_payment_required": profile.offline_payment_required if profile else True,
+                "offline_location": profile.offline_location if profile else "",
+            })
         return Response(data)
 
 
@@ -324,7 +342,7 @@ class MyInHouseNutritionistView(APIView):
     def get(self, request):
         try:
             assignment = PatientAssignment.objects.select_related(
-                "nutritionist"
+                "nutritionist", "nutritionist__nutritionist_profile"
             ).get(patient=request.user)
         except PatientAssignment.DoesNotExist:
             return Response(
@@ -332,15 +350,24 @@ class MyInHouseNutritionistView(APIView):
                 status=404
             )
 
+        nutri = assignment.nutritionist
+        profile = getattr(nutri, "nutritionist_profile", None)
+
         return Response({
-            "nutritionist_id": assignment.nutritionist.id,
-            "nutritionist_name": assignment.nutritionist.full_name,
+            "nutritionist_id": nutri.id,
+            "nutritionist_name": nutri.full_name or nutri.username,
+            "nutritionist_email": nutri.email,
+            "professional_title": profile.professional_title if profile else "Clinical Nutritionist",
+            "qualification": profile.qualification if profile else "",
+            "is_online_available": profile.is_online_available if profile else True,
+            "is_offline_available": profile.is_offline_available if profile else False,
+            "online_price": float(profile.online_price) if profile and profile.online_price is not None else 0.0,
+            "offline_price": float(profile.offline_price) if profile and profile.offline_price is not None else 0.0,
+            "offline_payment_required": profile.offline_payment_required if profile else True,
+            "offline_location": profile.offline_location if profile else "",
         })
 
 
-# ─────────────────────────────────────────────
-# AVAILABLE SLOTS FOR A NUTRITIONIST (Patient)
-# ─────────────────────────────────────────────
 # ─────────────────────────────────────────────
 # AVAILABLE SLOTS FOR A NUTRITIONIST (Patient)
 # ─────────────────────────────────────────────
@@ -394,7 +421,57 @@ class MyAppointmentsView(ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Appointment.objects.filter(patient=self.request.user)
+        qs = Appointment.objects.filter(
+            patient=self.request.user
+        ).select_related(
+            "nutritionist",
+            "nutritionist__nutritionist_profile",
+            "slot"
+        ).prefetch_related(
+            "feedbacks",
+            "feedbacks__given_by"
+        )
+
+        status_param = self.request.query_params.get("status")
+        type_param = self.request.query_params.get("appointment_type")
+        time_horizon = self.request.query_params.get("time_horizon")
+        date_param = self.request.query_params.get("date")
+        search = self.request.query_params.get("search")
+
+        if status_param and status_param != "ALL":
+            qs = qs.filter(status=status_param)
+
+        if type_param and type_param != "ALL":
+            qs = qs.filter(appointment_type=type_param)
+
+        if date_param:
+            parsed = parse_date(date_param)
+            if parsed:
+                qs = qs.filter(slot__date=parsed)
+
+        if search:
+            qs = qs.filter(
+                Q(nutritionist__full_name__icontains=search) |
+                Q(nutritionist__email__icontains=search)
+            )
+
+        today = localdate()
+        now_time = timezone.localtime().time()
+
+        if time_horizon == "upcoming":
+            qs = qs.filter(
+                Q(slot__date__gt=today) |
+                Q(slot__date=today, slot__end_time__gte=now_time)
+            ).order_by("slot__date", "slot__start_time")
+        elif time_horizon == "past":
+            qs = qs.filter(
+                Q(slot__date__lt=today) |
+                Q(slot__date=today, slot__end_time__lt=now_time)
+            ).order_by("-slot__date", "-slot__start_time")
+        else:
+            qs = qs.order_by("-created_at")
+
+        return qs
 
 
 # ─────────────────────────────────────────────
@@ -626,3 +703,102 @@ class SubmitFeedbackView(APIView):
             return Response({"message": "Feedback submitted"}, status=201)
 
         return Response(serializer.errors, status=400)
+
+
+# ─────────────────────────────────────────────
+# APPOINTMENT DETAIL (Patient & Nutritionist)
+# ─────────────────────────────────────────────
+class AppointmentDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        appointment = get_object_or_404(
+            Appointment.objects.select_related(
+                "patient",
+                "nutritionist",
+                "nutritionist__nutritionist_profile",
+                "slot",
+            ).prefetch_related(
+                "feedbacks",
+                "feedbacks__given_by",
+            ),
+            id=pk
+        )
+
+        # Allow access only to the patient, nutritionist, or staff
+        if (
+            appointment.patient != request.user
+            and appointment.nutritionist != request.user
+            and not request.user.is_staff
+        ):
+            return Response(
+                {"detail": "You do not have permission to view this appointment."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        return Response(AppointmentDetailSerializer(appointment).data)
+
+
+# ─────────────────────────────────────────────
+# APPOINTMENT NOTES & INSTRUCTIONS UPDATE (Nutritionist)
+# ─────────────────────────────────────────────
+class AppointmentNotesUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        appointment = get_object_or_404(Appointment, id=pk)
+
+        # Allow only the assigned nutritionist or staff to update clinical notes
+        if appointment.nutritionist != request.user and not request.user.is_staff:
+            return Response(
+                {"detail": "Only the assigned nutritionist can update appointment notes."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        serializer = AppointmentNotesUpdateSerializer(
+            appointment,
+            data=request.data,
+            partial=True
+        )
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                AppointmentDetailSerializer(appointment).data,
+                status=status.HTTP_200_OK
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ─────────────────────────────────────────────
+# PATIENT APPOINTMENT HISTORY (For Nutritionist / Admin)
+# ─────────────────────────────────────────────
+class PatientAppointmentHistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, patient_id):
+        patient = get_object_or_404(User, id=patient_id)
+
+        # Nutritionists and Staff can view appointments of the patient
+        # Patient can also view their own
+        if (
+            request.user.role != "nutritionist"
+            and not request.user.is_staff
+            and request.user.id != patient.id
+        ):
+            return Response(
+                {"detail": "Permission denied to view this patient's appointments."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        appointments = Appointment.objects.filter(
+            patient=patient
+        ).select_related(
+            "nutritionist",
+            "nutritionist__nutritionist_profile",
+            "slot"
+        ).prefetch_related(
+            "feedbacks",
+            "feedbacks__given_by"
+        ).order_by("-slot__date", "-slot__start_time")
+
+        return Response(AppointmentListSerializer(appointments, many=True).data)

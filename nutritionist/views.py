@@ -92,7 +92,7 @@ class UserListForNutritionistView(generics.ListAPIView):
     ordering_fields = ['date_joined', 'full_name']
 
     def get_queryset(self):
-        return User.objects.filter(role='user').order_by('-date_joined')
+        return User.objects.filter(role='user').select_related('userprofile').order_by('-date_joined')
 
 
 class AssignPatientAPIView(APIView):
@@ -102,6 +102,18 @@ class AssignPatientAPIView(APIView):
         patient_id = request.data.get('patient_id')
         if not patient_id:
             return Response({'error': 'patient_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check practitioner active capacity limit
+        from subscriptions.permissions import check_nutritionist_patient_capacity
+        can_add, current_count, max_limit, err_msg = check_nutritionist_patient_capacity(request.user)
+        if not can_add:
+            return Response({
+                'error': err_msg,
+                'detail': err_msg,
+                'upgrade_required': True,
+                'current_count': current_count,
+                'max_limit': max_limit
+            }, status=status.HTTP_403_FORBIDDEN)
 
         try:
             patient = User.objects.get(id=patient_id, role='user')
@@ -126,7 +138,7 @@ class AssignedPatientsView(generics.ListAPIView):
         assigned_patient_ids = PatientAssignment.objects.filter(
             nutritionist=self.request.user
         ).values_list('patient_id', flat=True)
-        return User.objects.filter(id__in=assigned_patient_ids)
+        return User.objects.filter(id__in=assigned_patient_ids).select_related('userprofile')
 
 
 class NutritionistCreatePatientView(generics.GenericAPIView):
@@ -136,6 +148,18 @@ class NutritionistCreatePatientView(generics.GenericAPIView):
     def post(self, request, *args, **kwargs):
         if request.user.role != "nutritionist":
             return Response({"detail": "Only nutritionists can create patients."}, status=403)
+
+        # Check practitioner active capacity limit
+        from subscriptions.permissions import check_nutritionist_patient_capacity
+        can_add, current_count, max_limit, err_msg = check_nutritionist_patient_capacity(request.user)
+        if not can_add:
+            return Response({
+                'error': err_msg,
+                'detail': err_msg,
+                'upgrade_required': True,
+                'current_count': current_count,
+                'max_limit': max_limit
+            }, status=status.HTTP_403_FORBIDDEN)
 
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -166,6 +190,11 @@ class DownloadPatientTemplateView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
 
     def get(self, request, *args, **kwargs):
+        from subscriptions.permissions import check_nutritionist_feature
+        allowed, err_msg, plan_name = check_nutritionist_feature(request.user, "nutri_bulk_upload_allowed")
+        if not allowed:
+            return Response({"detail": err_msg, "error": err_msg, "upgrade_required": True, "feature": "nutri_bulk_upload_allowed", "current_plan": plan_name}, status=status.HTTP_403_FORBIDDEN)
+
         try:
             excel_content = generate_patient_template_excel()
             response = HttpResponse(
@@ -187,6 +216,11 @@ class BulkUploadPatientsView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
 
     def post(self, request, *args, **kwargs):
+        from subscriptions.permissions import check_nutritionist_feature
+        allowed, err_msg, plan_name = check_nutritionist_feature(request.user, "nutri_bulk_upload_allowed")
+        if not allowed:
+            return Response({"detail": err_msg, "error": err_msg, "upgrade_required": True, "feature": "nutri_bulk_upload_allowed", "current_plan": plan_name}, status=status.HTTP_403_FORBIDDEN)
+
         uploaded_file = request.FILES.get('file')
         if not uploaded_file:
             return Response(
@@ -242,7 +276,7 @@ class PatientProfileDetailView(APIView):
             return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
 
         try:
-            user_profile = UserProfile.objects.get(user_id=patient_id)
+            user_profile = UserProfile.objects.select_related('user').get(user_id=patient_id)
             profile_serializer = self.PatientProfileSerializer1(user_profile)
 
             lab_report_data = None
@@ -301,6 +335,19 @@ class PatientLabReportListCreateView(generics.ListCreateAPIView):
             raise PermissionDenied("You are not assigned to this patient.")
         return LabReport.objects.filter(user_id=patient_id)
 
+    def create(self, request, *args, **kwargs):
+        from subscriptions.permissions import check_nutritionist_feature
+        allowed, err_msg, plan_name = check_nutritionist_feature(request.user, "nutri_lab_reports_allowed")
+        if not allowed:
+            return Response({
+                "error": err_msg,
+                "detail": err_msg,
+                "upgrade_required": True,
+                "feature": "nutri_lab_reports_allowed",
+                "current_plan": plan_name
+            }, status=status.HTTP_403_FORBIDDEN)
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         patient_id = self.kwargs['patient_id']
         if not PatientAssignment.objects.filter(nutritionist=self.request.user, patient_id=patient_id).exists():
@@ -340,7 +387,7 @@ class PatientMealLogView(generics.ListAPIView):
         patient_id = self.kwargs['patient_id']
         if not PatientAssignment.objects.filter(nutritionist=self.request.user, patient_id=patient_id).exists():
             raise PermissionDenied("You are not assigned to this patient.")
-        return UserMeal.objects.filter(user_id=patient_id).order_by('-consumed_at')
+        return UserMeal.objects.filter(user_id=patient_id).select_related('food_item').order_by('-consumed_at')
 
 
 class PatientDailySummaryView(APIView):
@@ -467,7 +514,7 @@ class NutritionistPatientDietRecommendationsView(generics.ListAPIView):
         patient_id = self.kwargs['patient_id']
         if not PatientAssignment.objects.filter(nutritionist=self.request.user, patient_id=patient_id).exists():
             raise PermissionDenied("You are not assigned to this patient.")
-        return DietRecommendation.objects.filter(user_id=patient_id).order_by('-created_at')
+        return DietRecommendation.objects.filter(user_id=patient_id).select_related('user', 'reviewed_by').order_by('-created_at')
 
 
 class AllAssignedDietPlansListView(generics.ListAPIView):
@@ -484,7 +531,7 @@ class AllAssignedDietPlansListView(generics.ListAPIView):
         assigned_patient_ids = PatientAssignment.objects.filter(
             nutritionist=self.request.user
         ).values_list('patient_id', flat=True)
-        return DietRecommendation.objects.filter(user_id__in=assigned_patient_ids)
+        return DietRecommendation.objects.filter(user_id__in=assigned_patient_ids).select_related('user', 'reviewed_by')
 
 
 class ApproveOrRejectDietView(APIView):
@@ -593,6 +640,17 @@ class EditDietPlanView(generics.GenericAPIView):
 
     @transaction.atomic
     def patch(self, request, pk=None, recommendation_id=None, *args, **kwargs):
+        from subscriptions.permissions import check_nutritionist_feature
+        allowed, err_msg, plan_name = check_nutritionist_feature(request.user, "nutri_manual_diet_allowed")
+        if not allowed:
+            return Response({
+                "error": err_msg,
+                "detail": err_msg,
+                "upgrade_required": True,
+                "feature": "nutri_manual_diet_allowed",
+                "current_plan": plan_name
+            }, status=status.HTTP_403_FORBIDDEN)
+
         plan_id = pk or recommendation_id
         try:
             recommendation = DietRecommendation.objects.select_for_update().get(pk=plan_id)
@@ -708,6 +766,17 @@ class GeneratePlanForPatientView(APIView):
     ]
 
     def post(self, request, patient_id):
+        from subscriptions.permissions import check_nutritionist_feature
+        allowed, err_msg, plan_name = check_nutritionist_feature(request.user, "nutri_ai_diet_allowed")
+        if not allowed:
+            return Response({
+                "error": err_msg,
+                "detail": err_msg,
+                "upgrade_required": True,
+                "feature": "nutri_ai_diet_allowed",
+                "current_plan": plan_name
+            }, status=status.HTTP_403_FORBIDDEN)
+
         try:
             patient = User.objects.get(id=patient_id, role="user")
         except User.DoesNotExist:
@@ -791,12 +860,11 @@ class MyAssignedNutritionistView(APIView):
             )
 
 
-# ==============================================================================
-# Nutritionist Self-Profile & Security Views
-# ==============================================================================
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 class NutritionistSelfProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
         user = request.user
@@ -804,12 +872,13 @@ class NutritionistSelfProfileView(APIView):
         user_profile = UserProfile.objects.filter(user=user).first()
 
         assigned_patients_count = PatientAssignment.objects.filter(nutritionist=user).count()
-        total_diet_plans = DietRecommendation.objects.filter(reviewed_by=user).count()
-        active_diet_plans = DietRecommendation.objects.filter(
-            reviewed_by=user,
-            status="approved",
-            is_deleted=False
-        ).count()
+        from django.db.models import Count, Q
+        diet_stats = DietRecommendation.objects.filter(reviewed_by=user).aggregate(
+            total=Count('id'),
+            active=Count('id', filter=Q(status="approved", is_deleted=False))
+        )
+        total_diet_plans = diet_stats['total']
+        active_diet_plans = diet_stats['active']
 
         sub = UserSubscription.objects.filter(user=user, is_active=True).select_related("plan").order_by("-created_at").first()
         sub_data = None
@@ -843,6 +912,7 @@ class NutritionistSelfProfileView(APIView):
                 "id": user.id,
                 "email": user.email,
                 "full_name": user.full_name,
+                "phone_number": user.phone_number or "",
                 "role": user.role,
                 "date_joined": user.date_joined,
                 "is_active": user.is_active,
@@ -851,9 +921,36 @@ class NutritionistSelfProfileView(APIView):
                 "nutritionist_type": nutri_profile.nutritionist_type,
                 "is_virtual_enabled": nutri_profile.is_virtual_enabled,
                 "is_verified": nutri_profile.is_verified,
+                "verified_at": nutri_profile.verified_at,
+                "professional_title": nutri_profile.professional_title or "Clinical Nutritionist",
+                "qualification": nutri_profile.qualification or "",
+                "registration_number": nutri_profile.registration_number or "",
+                "issuing_authority": nutri_profile.issuing_authority or "",
+                "years_of_experience": nutri_profile.years_of_experience or 0,
+                "current_organization": nutri_profile.current_organization or "",
+                "professional_bio": nutri_profile.professional_bio or "",
+                "languages_spoken": nutri_profile.languages_spoken if isinstance(nutri_profile.languages_spoken, list) else [],
+                "specializations": nutri_profile.specializations if isinstance(nutri_profile.specializations, list) else [],
+                "is_online_available": nutri_profile.is_online_available,
+                "is_offline_available": nutri_profile.is_offline_available,
+                "offline_location": nutri_profile.offline_location or "",
+                "online_price": nutri_profile.online_price,
+                "offline_price": nutri_profile.offline_price,
+                "offline_payment_required": nutri_profile.offline_payment_required,
+                "pending_online_price": nutri_profile.pending_online_price,
+                "pending_offline_price": nutri_profile.pending_offline_price,
+                "pending_offline_payment_required": nutri_profile.pending_offline_payment_required,
+                "price_approval_status": nutri_profile.price_approval_status,
+                "price_rejection_reason": nutri_profile.price_rejection_reason or "",
+                "qualification_certificate": nutri_profile.qualification_certificate.url if nutri_profile.qualification_certificate else None,
+                "registration_certificate": nutri_profile.registration_certificate.url if nutri_profile.registration_certificate else None,
+                "government_id": nutri_profile.government_id.url if nutri_profile.government_id else None,
+                "experience_certificate": nutri_profile.experience_certificate.url if nutri_profile.experience_certificate else None,
+                "additional_certifications": nutri_profile.additional_certifications.url if nutri_profile.additional_certifications else None,
+                "profile_photo": nutri_profile.profile_photo.url if nutri_profile.profile_photo else None,
             },
             "contact_details": {
-                "mobile_number": user_profile.mobile_number if user_profile else "",
+                "mobile_number": user_profile.mobile_number if user_profile else (user.phone_number or ""),
                 "gender": user_profile.gender if user_profile else "",
                 "date_of_birth": user_profile.date_of_birth if user_profile else None,
                 "city": user_profile.city if user_profile else "",
@@ -872,33 +969,280 @@ class NutritionistSelfProfileView(APIView):
         data = request.data
 
         # Update User model
-        full_name = data.get("full_name")
-        if full_name is not None:
-            user.full_name = str(full_name).strip()
-            user.save(update_fields=["full_name"])
+        user_fields_to_update = []
+        if "full_name" in data and data.get("full_name") is not None:
+            user.full_name = str(data.get("full_name")).strip()
+            user_fields_to_update.append("full_name")
+        if "phone_number" in data and data.get("phone_number") is not None:
+            user.phone_number = str(data.get("phone_number")).strip()
+            user_fields_to_update.append("phone_number")
+
+        if user_fields_to_update:
+            user.save(update_fields=user_fields_to_update)
 
         # Update or create UserProfile
         user_profile, _ = UserProfile.objects.get_or_create(user=user)
         if "mobile_number" in data:
-            user_profile.mobile_number = data.get("mobile_number") or ""
+            user_profile.mobile_number = str(data.get("mobile_number") or "").strip()
+        elif "phone_number" in data:
+            user_profile.mobile_number = str(data.get("phone_number") or "").strip()
+
         if "gender" in data:
-            user_profile.gender = data.get("gender") or ""
+            user_profile.gender = str(data.get("gender") or "").strip()
         if "date_of_birth" in data:
             dob_raw = data.get("date_of_birth")
-            user_profile.date_of_birth = parse_date(dob_raw) if dob_raw else None
+            user_profile.date_of_birth = parse_date(str(dob_raw)) if dob_raw else None
         if "city" in data:
-            user_profile.city = data.get("city") or ""
+            user_profile.city = str(data.get("city") or "").strip()
         if "country" in data:
-            user_profile.country = data.get("country") or ""
+            user_profile.country = str(data.get("country") or "").strip()
         user_profile.save()
 
         # Update NutritionistProfile
         nutri_profile, _ = NutritionistProfile.objects.get_or_create(user=user)
-        if "is_virtual_enabled" in data:
-            nutri_profile.is_virtual_enabled = bool(data.get("is_virtual_enabled"))
-            nutri_profile.save(update_fields=["is_virtual_enabled"])
+        nutri_fields_to_update = []
 
-        return Response({"message": "Profile updated successfully."}, status=status.HTTP_200_OK)
+        # Professional info
+        if "professional_title" in data:
+            nutri_profile.professional_title = str(data.get("professional_title") or "").strip()
+            nutri_fields_to_update.append("professional_title")
+        if "qualification" in data:
+            nutri_profile.qualification = str(data.get("qualification") or "").strip()
+            nutri_fields_to_update.append("qualification")
+        if "registration_number" in data:
+            nutri_profile.registration_number = str(data.get("registration_number") or "").strip()
+            nutri_fields_to_update.append("registration_number")
+        if "issuing_authority" in data:
+            nutri_profile.issuing_authority = str(data.get("issuing_authority") or "").strip()
+            nutri_fields_to_update.append("issuing_authority")
+        if "years_of_experience" in data:
+            try:
+                nutri_profile.years_of_experience = int(data.get("years_of_experience") or 0)
+                nutri_fields_to_update.append("years_of_experience")
+            except (ValueError, TypeError):
+                pass
+        if "current_organization" in data:
+            nutri_profile.current_organization = str(data.get("current_organization") or "").strip()
+            nutri_fields_to_update.append("current_organization")
+        if "professional_bio" in data:
+            nutri_profile.professional_bio = str(data.get("professional_bio") or "").strip()
+            nutri_fields_to_update.append("professional_bio")
+
+        # Languages Spoken (Handle string or JSON list)
+        if "languages_spoken" in data:
+            val = data.get("languages_spoken")
+            if isinstance(val, str):
+                import json
+                try:
+                    nutri_profile.languages_spoken = json.loads(val)
+                except Exception:
+                    nutri_profile.languages_spoken = [l.strip() for l in val.split(",") if l.strip()]
+            elif isinstance(val, list):
+                nutri_profile.languages_spoken = val
+            nutri_fields_to_update.append("languages_spoken")
+
+        # Specializations (Handle string or JSON list)
+        if "specializations" in data:
+            val = data.get("specializations")
+            if isinstance(val, str):
+                import json
+                try:
+                    nutri_profile.specializations = json.loads(val)
+                except Exception:
+                    nutri_profile.specializations = [s.strip() for s in val.split(",") if s.strip()]
+            elif isinstance(val, list):
+                nutri_profile.specializations = val
+            nutri_fields_to_update.append("specializations")
+
+        # Availability & Location
+        if "is_virtual_enabled" in data:
+            val = data.get("is_virtual_enabled")
+            nutri_profile.is_virtual_enabled = val in [True, "true", "True", 1, "1"]
+            nutri_fields_to_update.append("is_virtual_enabled")
+        if "is_online_available" in data:
+            val = data.get("is_online_available")
+            nutri_profile.is_online_available = val in [True, "true", "True", 1, "1"]
+            nutri_fields_to_update.append("is_online_available")
+        if "is_offline_available" in data:
+            val = data.get("is_offline_available")
+            nutri_profile.is_offline_available = val in [True, "true", "True", 1, "1"]
+            nutri_fields_to_update.append("is_offline_available")
+        if "offline_location" in data:
+            nutri_profile.offline_location = str(data.get("offline_location") or "").strip()
+            nutri_fields_to_update.append("offline_location")
+
+        # Handle Document & File Attachments (from request.FILES or request.data)
+        file_fields = [
+            "qualification_certificate",
+            "registration_certificate",
+            "government_id",
+            "experience_certificate",
+            "additional_certifications",
+            "profile_photo",
+        ]
+        has_file_uploaded = False
+        for f_name in file_fields:
+            if f_name in request.FILES:
+                setattr(nutri_profile, f_name, request.FILES[f_name])
+                nutri_fields_to_update.append(f_name)
+                has_file_uploaded = True
+            elif f_name in request.data and hasattr(request.data[f_name], 'read'):
+                setattr(nutri_profile, f_name, request.data[f_name])
+                nutri_fields_to_update.append(f_name)
+                has_file_uploaded = True
+
+        # Handle Price Updates (Requires Admin Approval)
+        price_requested = False
+        if "online_price" in data and data.get("online_price") not in [None, ""]:
+            try:
+                nutri_profile.pending_online_price = float(data.get("online_price"))
+                price_requested = True
+            except (ValueError, TypeError):
+                pass
+        if "offline_price" in data and data.get("offline_price") not in [None, ""]:
+            try:
+                nutri_profile.pending_offline_price = float(data.get("offline_price"))
+                price_requested = True
+            except (ValueError, TypeError):
+                pass
+        if "offline_payment_required" in data and data.get("offline_payment_required") not in [None, ""]:
+            val = data.get("offline_payment_required")
+            nutri_profile.pending_offline_payment_required = val in [True, "true", "True", 1, "1"]
+            price_requested = True
+
+        if price_requested:
+            nutri_profile.price_approval_status = "pending"
+            nutri_profile.price_rejection_reason = None
+            nutri_fields_to_update.extend([
+                "pending_online_price",
+                "pending_offline_price",
+                "pending_offline_payment_required",
+                "price_approval_status",
+                "price_rejection_reason"
+            ])
+
+        if has_file_uploaded:
+            nutri_profile.save()
+        elif nutri_fields_to_update:
+            nutri_profile.save(update_fields=list(set(nutri_fields_to_update)))
+
+        msg = "Profile updated successfully."
+        if price_requested:
+            msg += " Your requested price changes have been submitted for Admin approval."
+
+        return Response({"message": msg}, status=status.HTTP_200_OK)
+
+
+class AdminNutritionistPricingListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not (request.user.is_admin or request.user.role in ['admin', 'owner']):
+            return Response({"detail": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        status_filter = request.query_params.get("status", "pending")
+        queryset = NutritionistProfile.objects.select_related("user").all()
+
+        if status_filter != "all":
+            queryset = queryset.filter(price_approval_status=status_filter)
+
+        data = []
+        for profile in queryset:
+            data.append({
+                "id": profile.id,
+                "user_id": profile.user.id,
+                "email": profile.user.email,
+                "full_name": profile.user.full_name,
+                "is_online_available": profile.is_online_available,
+                "is_offline_available": profile.is_offline_available,
+                "offline_location": profile.offline_location,
+                "current_online_price": profile.online_price,
+                "current_offline_price": profile.offline_price,
+                "current_offline_payment_required": profile.offline_payment_required,
+                "pending_online_price": profile.pending_online_price,
+                "pending_offline_price": profile.pending_offline_price,
+                "pending_offline_payment_required": profile.pending_offline_payment_required,
+                "price_approval_status": profile.price_approval_status,
+                "price_rejection_reason": profile.price_rejection_reason,
+            })
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class AdminNutritionistPricingApproveView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, profile_id):
+        if not (request.user.is_admin or request.user.role in ['admin', 'owner']):
+            return Response({"detail": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            profile = NutritionistProfile.objects.select_related("user").get(id=profile_id)
+        except NutritionistProfile.DoesNotExist:
+            return Response({"detail": "Nutritionist profile not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        action = request.data.get("action") # 'approve' or 'reject'
+        reason = request.data.get("reason", "")
+
+        from features.models import Message
+        from features.tasks import send_message_notification
+
+        if action == "approve":
+            if profile.pending_online_price is not None:
+                profile.online_price = profile.pending_online_price
+            if profile.pending_offline_price is not None:
+                profile.offline_price = profile.pending_offline_price
+            if profile.pending_offline_payment_required is not None:
+                profile.offline_payment_required = profile.pending_offline_payment_required
+
+            profile.pending_online_price = None
+            profile.pending_offline_price = None
+            profile.pending_offline_payment_required = None
+            profile.price_approval_status = "approved"
+            profile.price_rejection_reason = None
+            profile.save()
+
+            # Create notification message for nutritionist
+            msg_text = (
+                f"🎉 Your appointment pricing has been APPROVED by Admin! "
+                f"Online Price: ₹{profile.online_price}, Offline Price: ₹{profile.offline_price}."
+            )
+            message_obj = Message.objects.create(
+                sender=request.user,
+                receiver=profile.user,
+                text=msg_text
+            )
+            try:
+                send_message_notification(message_obj)
+            except Exception as e:
+                print(f"Failed to trigger WebSocket notification: {e}")
+
+            return Response({"message": "Pricing approved successfully and nutritionist notified."}, status=status.HTTP_200_OK)
+
+        elif action == "reject":
+            profile.price_approval_status = "rejected"
+            profile.price_rejection_reason = reason
+            profile.pending_online_price = None
+            profile.pending_offline_price = None
+            profile.pending_offline_payment_required = None
+            profile.save()
+
+            # Create notification message for nutritionist
+            msg_text = f"⚠️ Your appointment pricing request was REJECTED by Admin. Reason: {reason or 'Not specified'}"
+            message_obj = Message.objects.create(
+                sender=request.user,
+                receiver=profile.user,
+                text=msg_text
+            )
+            try:
+                send_message_notification(message_obj)
+            except Exception as e:
+                print(f"Failed to trigger WebSocket notification: {e}")
+
+            return Response({"message": "Pricing rejected and nutritionist notified."}, status=status.HTTP_200_OK)
+
+        else:
+            return Response({"detail": "Invalid action. Use 'approve' or 'reject'."}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class NutritionistChangePasswordView(APIView):
@@ -947,3 +1291,63 @@ class NutritionistChangePasswordView(APIView):
             {"message": "Your password has been changed successfully."},
             status=status.HTTP_200_OK
         )
+
+
+class AdminNutritionistVerifyView(APIView):
+    """
+    Admin-only endpoint to verify or unverify a nutritionist.
+    Creates a persistent Message in the database, sends email & WebSocket push.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, profile_id):
+        from features.models import Message
+        from features.tasks import send_message_notification
+
+        profile = get_object_or_404(NutritionistProfile, id=profile_id)
+        action = request.data.get("action", "verify")  # "verify" or "unverify"
+
+        if action == "verify":
+            profile.is_verified = True
+            profile.verified_at = timezone.now()
+            profile.save()
+
+            msg_text = (
+                "🎉 Congratulations! Your practitioner profile has been officially VERIFIED & APPROVED by TrackIntake Admin. "
+                "Your clinical credentials and consultation services are now active and live for patients."
+            )
+            message_obj = Message.objects.create(
+                sender=request.user,
+                receiver=profile.user,
+                text=msg_text
+            )
+            try:
+                send_message_notification(message_obj)
+            except Exception as e:
+                print(f"Failed to trigger verification notification: {e}")
+
+            return Response({"message": "Nutritionist verified successfully and notification dispatched."}, status=status.HTTP_200_OK)
+
+        elif action == "unverify":
+            profile.is_verified = False
+            profile.verified_at = None
+            profile.save()
+
+            msg_text = (
+                "⚠️ Your practitioner account verification status has been revoked by Admin. "
+                "Please check your uploaded verification documents or contact support."
+            )
+            message_obj = Message.objects.create(
+                sender=request.user,
+                receiver=profile.user,
+                text=msg_text
+            )
+            try:
+                send_message_notification(message_obj)
+            except Exception as e:
+                print(f"Failed to trigger unverify notification: {e}")
+
+            return Response({"message": "Nutritionist unverified and notification dispatched."}, status=status.HTTP_200_OK)
+
+        else:
+            return Response({"detail": "Invalid action. Use 'verify' or 'unverify'."}, status=status.HTTP_400_BAD_REQUEST)
