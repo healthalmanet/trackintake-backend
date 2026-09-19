@@ -37,6 +37,7 @@ def send_and_reschedule_reminders():
     logger.info(f"📌 Found {reminders_to_send.count()} due reminders to process.")
     print(f"📌 Found {reminders_to_send.count()} due reminders to process.")
 
+    import threading
     for reminder in reminders_to_send:
         user = reminder.user
         message = f"⏰ Reminder: {reminder.title}"
@@ -45,33 +46,18 @@ def send_and_reschedule_reminders():
         logger.info(f"🔔 Processing reminder '{reminder.title}' for user {user.email}")
         print(f"🔔 Processing reminder '{reminder.title}' for user {user.email}")
 
-        # 1. Send Gmail Notification
-        try:
-            send_mail(
-                subject=f"Your Reminder: {reminder.title}",
-                message=message,
-                from_email=settings.DEFAULT_FROM_EMAIL,  # Uses EMAIL_HOST_USER from settings.py
-                recipient_list=[user.email],
-                fail_silently=False
-            )
-            logger.info(f"📧 Email sent to {user.email} for reminder '{reminder.title}'.")
-            print(f"📧 Email sent to {user.email} for reminder '{reminder.title}'.")
-        except Exception as e:
-            logger.error(f"❌ Failed to send email to {user.email}: {e}")
-            print(f"❌ Failed to send email to {user.email}: {e}")
-
-        # 2. Send WebSocket Push Notification via the channel layer
+        # 1. Send WebSocket Push Notification via the channel layer FIRST (instant)
         if channel_layer:
             try:
                 async_to_sync(channel_layer.group_send)(
-                group_name,
-                {
-                    "type": "send_reminder",
-                    "message": message,
-                    "reminder_id": reminder.id,
-                    "title": reminder.title
-                }
-            )
+                    group_name,
+                    {
+                        "type": "send_reminder",
+                        "message": message,
+                        "reminder_id": reminder.id,
+                        "title": reminder.title
+                    }
+                )
                 print(f"📲 WebSocket message sent to group '{group_name}'.")
                 logger.info(f"📲 WebSocket message sent to group '{group_name}'.")
             except Exception as e:
@@ -80,6 +66,14 @@ def send_and_reschedule_reminders():
         else:
             logger.warning(f"⚠️ Skipping WebSocket send for user {user.id} due to missing channel layer.")
             print(f"⚠️ Skipping WebSocket send for user {user.id} due to missing channel layer.")
+
+        # 2. Send Gmail Notification in background thread so loop never hangs
+        if user and user.email:
+            threading.Thread(
+                target=_send_email_background,
+                args=(f"Your Reminder: {reminder.title}", message, user.email),
+                daemon=True
+            ).start()
 
         # 3. Reschedule or Deactivate the Reminder
         if reminder.frequency == 'once':
@@ -108,8 +102,24 @@ def send_and_reschedule_reminders():
 
 
 
+def _send_email_background(subject, message, recipient_email):
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[recipient_email],
+            fail_silently=True,
+        )
+        logger.info(f"📧 Email sent to {recipient_email} with subject: {subject}")
+    except Exception as e:
+        logger.error(f"❌ Background email failed: {e}")
+
+
 def send_message_notification(sender_or_message, receiver=None, text=None):
     from features.models import Message
+    import threading
+    from django.utils import timezone
 
     if isinstance(sender_or_message, Message):
         message_obj = sender_or_message
@@ -120,33 +130,8 @@ def send_message_notification(sender_or_message, receiver=None, text=None):
         sender = sender_or_message
         message_obj = None
 
+    # 1. Immediate WebSocket Broadcast (sub-millisecond)
     channel_layer = get_channel_layer()
-    email_text = f"Hello {receiver.full_name or receiver.email},\n\n{text}\n\nBest regards,\nTrackIntake Team"
-
-    email_subject = f"📩 New message from {sender.full_name or sender.email}" if sender else "TrackIntake Notification"
-    text_upper = (text or "").upper()
-    if "VERIFIED" in text_upper:
-        email_subject = "🎉 TrackIntake - Your Practitioner Account is Officially Verified!"
-    elif "APPROVED" in text_upper:
-        email_subject = "🎉 TrackIntake - Your Appointment Pricing has been Approved!"
-    elif "REJECTED" in text_upper:
-        email_subject = "⚠️ TrackIntake - Update Regarding Your Practitioner Account"
-
-    # Gmail
-    try:
-        send_mail(
-            subject=email_subject,
-            message=email_text,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[receiver.email],
-            fail_silently=True,
-        )
-        logger.info(f"📧 Email sent to {receiver.email} with subject: {email_subject}")
-    except Exception as e:
-        logger.error(f"❌ Email failed: {e}")
-
-    # WebSocket Broadcast
-    from django.utils import timezone
     msg_id = message_obj.id if message_obj else None
     timestamp_str = message_obj.timestamp.isoformat() if message_obj and hasattr(message_obj, "timestamp") else timezone.now().isoformat()
     is_read = message_obj.is_read if message_obj else False
@@ -174,6 +159,25 @@ def send_message_notification(sender_or_message, receiver=None, text=None):
         logger.info(f"📲 WebSocket sent to receiver user_{receiver.id}")
     except Exception as e:
         logger.error(f"❌ WebSocket failed: {e}")
+
+    # 2. Asynchronous Background Email Dispatch (Non-blocking so HTTP response is instant)
+    if receiver and receiver.email:
+        email_text = f"Hello {receiver.full_name or receiver.email},\n\n{text}\n\nBest regards,\nTrackIntake Team"
+        email_subject = f"📩 New message from {sender.full_name or sender.email}" if sender else "TrackIntake Notification"
+        text_upper = (text or "").upper()
+        if "VERIFIED" in text_upper:
+            email_subject = "🎉 TrackIntake - Your Practitioner Account is Officially Verified!"
+        elif "APPROVED" in text_upper:
+            email_subject = "🎉 TrackIntake - Your Appointment Pricing has been Approved!"
+        elif "REJECTED" in text_upper:
+            email_subject = "⚠️ TrackIntake - Update Regarding Your Practitioner Account"
+
+        email_thread = threading.Thread(
+            target=_send_email_background,
+            args=(email_subject, email_text, receiver.email),
+            daemon=True
+        )
+        email_thread.start()
 
 
 
