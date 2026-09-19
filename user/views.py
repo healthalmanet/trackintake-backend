@@ -5,7 +5,6 @@ from django.shortcuts import render
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, DjangoUnicodeDecodeError, smart_str # <-- Add smart_str
-from django.core.mail import send_mail
 from django.conf import settings
 from rest_framework import generics, permissions, status, views
 import secrets
@@ -276,12 +275,25 @@ class ForgotPasswordView(generics.GenericAPIView):
             frontend_url = "https://trackintake.co.in/reset-password"
             reset_url = f"{frontend_url}/{uid}/{token}/"
 
-            send_mail(
-                subject="Password Reset Request",
-                message=f"Hi {user.full_name or user.email},\n\nClick the link to reset your password:\n{reset_url}\n\nIf you didn’t request this, please ignore it.",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
-                fail_silently=False
+            reset_text = f"Hi {user.full_name or user.email},\n\nClick the link to reset your password:\n{reset_url}\n\nIf you didn’t request this, please ignore it."
+            reset_html = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px;">
+                <h2 style="color: #2e7d32; margin-bottom: 16px;">Password Reset Request</h2>
+                <p>Hi <strong>{user.full_name or user.email}</strong>,</p>
+                <p style="color: #4a5568; line-height: 1.6;">We received a request to reset your password for your TrackIntake account. Click the button below to proceed:</p>
+                <div style="margin: 28px 0; text-align: center;">
+                    <a href="{reset_url}" style="background-color: #2e7d32; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;">Reset Password</a>
+                </div>
+                <p style="color: #718096; font-size: 13px;">Or copy and paste this link in your browser:<br><a href="{reset_url}" style="color: #2e7d32;">{reset_url}</a></p>
+                <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+                <p style="color: #a0aec0; font-size: 12px;">If you didn't request a password reset, you can safely ignore this email.</p>
+            </div>
+            """
+            send_resend_email(
+                to=email,
+                subject="🔐 TrackIntake - Password Reset Request",
+                html=reset_html,
+                text=reset_text,
             )
             return Response({'message': 'Password reset link has been sent.'}, status=status.HTTP_200_OK)
         except User.DoesNotExist:

@@ -4,11 +4,9 @@ import google.generativeai as genai
 from functools import wraps
 from django.http import HttpResponseForbidden
 from h11 import Response
-from django.core.mail import send_mail
 from twilio.rest import Client
 from django.conf import settings
 from django.utils import timezone
-from django.core.mail import EmailMultiAlternatives
 import logging
 
 logger = logging.getLogger(__name__)
@@ -74,15 +72,13 @@ def send_email_notification_CALORIE(to_email, subject, message, calories, target
     </html>
     """
 
-    email = EmailMultiAlternatives(subject, text_content, settings.EMAIL_HOST_USER, [to_email])
-    email.attach_alternative(html_content, "text/html")
-    try:
-        email.send()
-    except Exception as e:
-        logger.warning(f"📭 Email failed but meal saved: {e}")
-
-
-
+    from utils.resend_email import send_resend_email_async
+    send_resend_email_async(
+        to=to_email,
+        subject=subject,
+        html=html_content,
+        text=text_content
+    )
 
 
 def send_email_notification_WATER(to_email, subject, message, consumed_ml, target_ml, date):
@@ -110,12 +106,13 @@ def send_email_notification_WATER(to_email, subject, message, consumed_ml, targe
     </html>
     """
 
-    email = EmailMultiAlternatives(subject, text_content, settings.EMAIL_HOST_USER, [to_email])
-    email.attach_alternative(html_content, "text/html")
-    try:
-        email.send()
-    except Exception as e:
-        logger.warning(f"📭 Email failed but meal saved: {e}")
+    from utils.resend_email import send_resend_email_async
+    send_resend_email_async(
+        to=to_email,
+        subject=subject,
+        html=html_content,
+        text=text_content
+    )
 
 
 

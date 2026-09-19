@@ -1,28 +1,21 @@
 # appointments/email_utils.py
 import logging
-import threading
-from django.core.mail import send_mail
-from django.conf import settings
+from utils.resend_email import send_resend_email_async
 
 logger = logging.getLogger(__name__)
 
-def _send_mail_worker(subject, message, to_email):
-    try:
-        send_mail(
-            subject,
-            message,
-            settings.DEFAULT_FROM_EMAIL,
-            [to_email],
-            fail_silently=True,
-        )
-        logger.info(f"📧 Appointment email sent successfully to {to_email}")
-    except Exception as e:
-        logger.error(f"❌ Failed to send appointment email to {to_email}: {e}")
-
 def send_appointment_email(to_email, subject, message):
-    thread = threading.Thread(
-        target=_send_mail_worker,
-        args=(subject, message, to_email),
-        daemon=True
+    html_body = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;">
+        <h3 style="color: #2e7d32;">📅 TrackIntake Appointment Notification</h3>
+        <p style="white-space: pre-wrap; font-size: 14px; line-height: 1.6; color: #333;">{message}</p>
+        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+        <p style="font-size: 12px; color: #888;">TrackIntake Appointments Team</p>
+    </div>
+    """
+    return send_resend_email_async(
+        to=to_email,
+        subject=subject,
+        html=html_body,
+        text=message,
     )
-    thread.start()
