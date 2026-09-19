@@ -3,11 +3,11 @@
 import logging
 from django.utils import timezone
 from datetime import timedelta
-from django.core.mail import send_mail
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from .models import CustomReminder
 from django.conf import settings
+from utils.resend_email import send_resend_email_async
 
 logger = logging.getLogger(__name__)
 print(logger)
@@ -67,13 +67,22 @@ def send_and_reschedule_reminders():
             logger.warning(f"⚠️ Skipping WebSocket send for user {user.id} due to missing channel layer.")
             print(f"⚠️ Skipping WebSocket send for user {user.id} due to missing channel layer.")
 
-        # 2. Send Gmail Notification in background thread so loop never hangs
+        # 2. Send Resend Email Notification in background so loop never hangs
         if user and user.email:
-            threading.Thread(
-                target=_send_email_background,
-                args=(f"Your Reminder: {reminder.title}", message, user.email),
-                daemon=True
-            ).start()
+            send_resend_email_async(
+                to=user.email,
+                subject=f"⏰ Reminder: {reminder.title}",
+                text=message,
+                html=f"""
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;">
+                    <h3 style="color: #2e7d32;">⏰ TrackIntake Reminder</h3>
+                    <p>Hello <strong>{user.full_name or user.email}</strong>,</p>
+                    <p style="font-size: 16px; color: #333; background: #f4fbf7; padding: 12px; border-left: 4px solid #2e7d32; border-radius: 4px;">{reminder.title}</p>
+                    {f'<p style="color: #666;">{reminder.description}</p>' if getattr(reminder, "description", None) else ''}
+                    <p style="margin-top: 20px; font-size: 12px; color: #888;">TrackIntake Reminders</p>
+                </div>
+                """
+            )
 
         # 3. Reschedule or Deactivate the Reminder
         if reminder.frequency == 'once':
@@ -102,23 +111,11 @@ def send_and_reschedule_reminders():
 
 
 
-def _send_email_background(subject, message, recipient_email):
-    try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[recipient_email],
-            fail_silently=True,
-        )
-        logger.info(f"📧 Email sent to {recipient_email} with subject: {subject}")
-    except Exception as e:
-        logger.error(f"❌ Background email failed: {e}")
+from utils.resend_email import send_resend_email_async
 
 
 def send_message_notification(sender_or_message, receiver=None, text=None):
     from features.models import Message
-    import threading
     from django.utils import timezone
 
     if isinstance(sender_or_message, Message):
@@ -160,7 +157,7 @@ def send_message_notification(sender_or_message, receiver=None, text=None):
     except Exception as e:
         logger.error(f"❌ WebSocket failed: {e}")
 
-    # 2. Asynchronous Background Email Dispatch (Non-blocking so HTTP response is instant)
+    # 2. Asynchronous Resend Email Dispatch (Non-blocking via Resend API)
     if receiver and receiver.email:
         email_text = f"Hello {receiver.full_name or receiver.email},\n\n{text}\n\nBest regards,\nTrackIntake Team"
         email_subject = f"📩 New message from {sender.full_name or sender.email}" if sender else "TrackIntake Notification"
@@ -172,12 +169,20 @@ def send_message_notification(sender_or_message, receiver=None, text=None):
         elif "REJECTED" in text_upper:
             email_subject = "⚠️ TrackIntake - Update Regarding Your Practitioner Account"
 
-        email_thread = threading.Thread(
-            target=_send_email_background,
-            args=(email_subject, email_text, receiver.email),
-            daemon=True
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;">
+            <h3 style="color: #2e7d32;">TrackIntake Notification</h3>
+            <p>Hello <strong>{receiver.full_name or receiver.email}</strong>,</p>
+            <p style="background-color: #f9f9f9; padding: 12px; border-left: 4px solid #2e7d32; border-radius: 4px;">{text}</p>
+            <p style="margin-top: 20px; font-size: 12px; color: #888;">TrackIntake Team</p>
+        </div>
+        """
+        send_resend_email_async(
+            to=receiver.email,
+            subject=email_subject,
+            html=html_body,
+            text=email_text,
         )
-        email_thread.start()
 
 
 

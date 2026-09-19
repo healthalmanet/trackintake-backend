@@ -1,8 +1,4 @@
-from django.utils.timezone import now
-from django.core.mail import send_mail
-from channels.layers import get_channel_layer
-from asgiref.sync import async_to_sync
-from features.models import CustomReminder
+from utils.resend_email import send_resend_email_async
 
 def send_due_reminders():
     reminders = CustomReminder.objects.filter(reminder_time__lte=now(), is_active=True)
@@ -12,14 +8,14 @@ def send_due_reminders():
         user = reminder.user
         msg = f"⏰ Reminder: {reminder.title}"
 
-        # ✅ Send Gmail
-        send_mail(
-            subject="Your Reminder Notification",
-            message=msg,
-            from_email="health.almanet@gmail.com",
-            recipient_list=[user.email],
-            fail_silently=True
-        )
+        # ✅ Send Resend Email Notification
+        if user and user.email:
+            send_resend_email_async(
+                to=user.email,
+                subject="⏰ Your Reminder Notification",
+                text=msg,
+                html=f"<p>{msg}</p>"
+            )
 
         # ✅ Send WebSocket if user online
         async_to_sync(channel_layer.group_send)(
