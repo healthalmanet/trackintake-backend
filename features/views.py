@@ -205,16 +205,37 @@ class MessageListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        qs = Message.objects.filter(
-            Q(sender=self.request.user) | Q(receiver=self.request.user)
-        ).order_by('-timestamp')
+        user = self.request.user
+        partner_id = (
+            self.request.query_params.get('partner_id')
+            or self.request.query_params.get('sender_id')
+            or self.request.query_params.get('patient_id')
+        )
+        
+        if partner_id:
+            qs = Message.objects.filter(
+                (Q(sender=user) & Q(receiver_id=partner_id)) |
+                (Q(receiver=user) & Q(sender_id=partner_id))
+            )
+        else:
+            qs = Message.objects.filter(
+                Q(sender=user) | Q(receiver=user)
+            )
+
         is_read = self.request.query_params.get('is_read')
         if is_read is not None:
             if is_read.lower() in ['true', '1']:
                 qs = qs.filter(is_read=True)
             elif is_read.lower() in ['false', '0']:
                 qs = qs.filter(is_read=False)
-        return qs        
+
+        ordering = self.request.query_params.get('ordering', 'timestamp')
+        if ordering == '-timestamp':
+            qs = qs.order_by('-timestamp')
+        else:
+            qs = qs.order_by('timestamp')
+
+        return qs.select_related('sender', 'receiver')
 
 
 class MarkMessagesReadView(generics.GenericAPIView):
@@ -222,7 +243,11 @@ class MarkMessagesReadView(generics.GenericAPIView):
 
     def post(self, request, *args, **kwargs):
         user = request.user
-        Message.objects.filter(receiver=user, is_read=False).update(is_read=True)
+        sender_id = request.data.get('sender_id') or request.query_params.get('sender_id')
+        qs = Message.objects.filter(receiver=user, is_read=False)
+        if sender_id:
+            qs = qs.filter(sender_id=sender_id)
+        qs.update(is_read=True)
         return Response({"status": "✅ Messages marked as read"}, status=status.HTTP_200_OK)
 
 
