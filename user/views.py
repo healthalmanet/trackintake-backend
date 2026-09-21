@@ -194,8 +194,44 @@ class RegisterView(views.APIView):
             if not already_active:
                 activate_plan_for_user(user=user, plan=payment.plan)
 
+        from user.serializers import sanitize_json_string_list
+
+        response_data = {
+            "message": "Registration successful. Please log in.",
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "phone_number": user.phone_number or "",
+                "role": user.role,
+            }
+        }
+
+        if user.role == "nutritionist":
+            from nutritionist.models import NutritionistProfile
+            nutri_profile = NutritionistProfile.objects.filter(user=user).first()
+            if nutri_profile:
+                response_data["nutritionist_profile"] = {
+                    "professional_title": nutri_profile.professional_title or "Clinical Nutritionist",
+                    "qualification": nutri_profile.qualification or "",
+                    "registration_number": nutri_profile.registration_number or "",
+                    "issuing_authority": nutri_profile.issuing_authority or "",
+                    "years_of_experience": nutri_profile.years_of_experience or 0,
+                    "current_organization": nutri_profile.current_organization or "",
+                    "professional_bio": nutri_profile.professional_bio or "",
+                    "languages_spoken": sanitize_json_string_list(nutri_profile.languages_spoken),
+                    "specializations": sanitize_json_string_list(nutri_profile.specializations),
+                    "is_online_available": nutri_profile.is_online_available,
+                    "is_offline_available": nutri_profile.is_offline_available,
+                    "offline_location": nutri_profile.offline_location or "",
+                    "online_price": float(nutri_profile.online_price or 0),
+                    "offline_price": float(nutri_profile.offline_price or 0),
+                    "offline_payment_required": nutri_profile.offline_payment_required,
+                    "is_verified": nutri_profile.is_verified,
+                }
+
         return Response(
-            {"message": "Registration successful. Please log in."},
+            response_data,
             status=status.HTTP_201_CREATED,
         )
 
