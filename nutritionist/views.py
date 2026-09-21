@@ -174,12 +174,17 @@ class NutritionistCreatePatientView(generics.GenericAPIView):
                 # ❌ Free plan assign nahi karo
                 # Patient login karke khud plan kharide
 
+                user_data = UserSerializer1(user).data
                 return Response(
-                    {"detail": "Patient created and assigned successfully."},
+                    {
+                        "detail": "Patient created and assigned successfully.",
+                        "message": "Patient created and assigned successfully.",
+                        **user_data
+                    },
                     status=201
                 )
         except Exception as e:
-            return Response({"detail": str(e)}, status=400)
+            return Response({"detail": str(e), "error": str(e)}, status=400)
 
 
 class DownloadPatientTemplateView(APIView):
@@ -438,13 +443,19 @@ class TargetNutrientsForPatientView(APIView):
 
             profile = UserProfile.objects.get(user_id=patient_id)
             dob = profile.date_of_birth
-            age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+            if dob:
+                try:
+                    age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+                except Exception:
+                    age = 30
+            else:
+                age = 30
 
-            weight = profile.weight_kg
-            height = profile.height_cm
-            gender = profile.gender
-            activity_level = profile.activity_level
-            goal = profile.goal
+            weight = float(profile.weight_kg) if profile.weight_kg else 65.0
+            height = float(profile.height_cm) if profile.height_cm else 170.0
+            gender = str(profile.gender or "other").lower()
+            activity_level = str(profile.activity_level or "sedentary").lower()
+            goal = str(profile.goal or "maintain")
 
             bmr = 10 * weight + 6.25 * height - 5 * age + (5 if gender == "male" else -161)
 
@@ -454,10 +465,10 @@ class TargetNutrientsForPatientView(APIView):
             }
             maintenance_calories = bmr * activity_multipliers.get(activity_level.lower(), 1.2)
 
-            if goal == "Gain Weight":
+            if "gain" in goal.lower():
                 recommended_calories = maintenance_calories * 1.15
                 target_weight = weight + 5
-            elif goal == "Lose Weight":
+            elif "lose" in goal.lower():
                 recommended_calories = maintenance_calories * 0.8
                 target_weight = weight - 5
             else:
@@ -929,8 +940,8 @@ class NutritionistSelfProfileView(APIView):
                 "years_of_experience": nutri_profile.years_of_experience or 0,
                 "current_organization": nutri_profile.current_organization or "",
                 "professional_bio": nutri_profile.professional_bio or "",
-                "languages_spoken": nutri_profile.languages_spoken if isinstance(nutri_profile.languages_spoken, list) else [],
-                "specializations": nutri_profile.specializations if isinstance(nutri_profile.specializations, list) else [],
+                "languages_spoken": sanitize_json_string_list(nutri_profile.languages_spoken),
+                "specializations": sanitize_json_string_list(nutri_profile.specializations),
                 "is_online_available": nutri_profile.is_online_available,
                 "is_offline_available": nutri_profile.is_offline_available,
                 "offline_location": nutri_profile.offline_location or "",
@@ -1028,30 +1039,16 @@ class NutritionistSelfProfileView(APIView):
             nutri_profile.professional_bio = str(data.get("professional_bio") or "").strip()
             nutri_fields_to_update.append("professional_bio")
 
-        # Languages Spoken (Handle string or JSON list)
+        from user.serializers import sanitize_json_string_list
+
+        # Languages Spoken (Handle string, JSON string, or list)
         if "languages_spoken" in data:
-            val = data.get("languages_spoken")
-            if isinstance(val, str):
-                import json
-                try:
-                    nutri_profile.languages_spoken = json.loads(val)
-                except Exception:
-                    nutri_profile.languages_spoken = [l.strip() for l in val.split(",") if l.strip()]
-            elif isinstance(val, list):
-                nutri_profile.languages_spoken = val
+            nutri_profile.languages_spoken = sanitize_json_string_list(data.get("languages_spoken"))
             nutri_fields_to_update.append("languages_spoken")
 
-        # Specializations (Handle string or JSON list)
+        # Specializations (Handle string, JSON string, or list)
         if "specializations" in data:
-            val = data.get("specializations")
-            if isinstance(val, str):
-                import json
-                try:
-                    nutri_profile.specializations = json.loads(val)
-                except Exception:
-                    nutri_profile.specializations = [s.strip() for s in val.split(",") if s.strip()]
-            elif isinstance(val, list):
-                nutri_profile.specializations = val
+            nutri_profile.specializations = sanitize_json_string_list(data.get("specializations"))
             nutri_fields_to_update.append("specializations")
 
         # Availability & Location

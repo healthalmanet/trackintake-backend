@@ -122,14 +122,63 @@ class VerifyOTPSerializer(serializers.Serializer):
         return str(value).strip()
 
 
+def sanitize_json_string_list(val):
+    """
+    Ensures input (JSON string, comma-delimited string, list, set, or tuple)
+    is converted to a clean Python list of non-empty strings, serializable to a JSON array.
+    """
+    if not val:
+        return []
+    if isinstance(val, (list, tuple, set)):
+        result = []
+        for item in val:
+            if isinstance(item, (list, tuple, set)):
+                result.extend([str(x).strip() for x in item if str(x).strip()])
+            elif isinstance(item, str):
+                s = item.strip()
+                if s.startswith('[') and s.endswith(']'):
+                    try:
+                        import json
+                        parsed = json.loads(s)
+                        if isinstance(parsed, list):
+                            result.extend([str(x).strip() for x in parsed if str(x).strip()])
+                            continue
+                    except Exception:
+                        pass
+                if s:
+                    result.append(s)
+            elif item is not None:
+                s = str(item).strip()
+                if s:
+                    result.append(s)
+        return list(dict.fromkeys(result)) # preserve order, remove duplicates
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or s in ('[]', '""', "''", 'null', 'None', '{}'):
+            return []
+        # Try JSON parsing
+        try:
+            import json
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                return sanitize_json_string_list(parsed)
+            elif isinstance(parsed, str):
+                return [x.strip() for x in parsed.split(',') if x.strip()]
+        except Exception:
+            pass
+        # Fallback to comma separation
+        return [x.strip() for x in s.split(',') if x.strip()]
+    return []
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     """
-    Final registration serializer.
+    Final registration serializer for Patients and Nutritionists.
     """
     full_name = serializers.CharField(required=True)
     phone_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     verification_token = serializers.CharField(write_only=True)
-    role = serializers.CharField(required=False)
+    role = serializers.CharField(required=False, default='user')
 
     # Optional Nutritionist Professional & Document Fields
     is_online_available = serializers.BooleanField(required=False, default=True)
@@ -181,35 +230,81 @@ class RegisterSerializer(serializers.ModelSerializer):
         else:
             mutable_data = dict(data)
 
-        # Sanitize empty strings for optional numeric, date, and json fields
-        if mutable_data.get('date_of_birth') == '':
+        # Sanitize empty strings / null markers for optional numeric, date, and json fields
+        if mutable_data.get('date_of_birth') in ['', 'null', 'None', 'undefined']:
             mutable_data['date_of_birth'] = None
-        if mutable_data.get('years_of_experience') in ['', None]:
+        if mutable_data.get('years_of_experience') in ['', None, 'null', 'undefined']:
             mutable_data['years_of_experience'] = 0
-        if mutable_data.get('online_price') in ['', None]:
+        if mutable_data.get('online_price') in ['', None, 'null', 'undefined']:
             mutable_data['online_price'] = 0.00
-        if mutable_data.get('offline_price') in ['', None]:
+        if mutable_data.get('offline_price') in ['', None, 'null', 'undefined']:
             mutable_data['offline_price'] = 0.00
+
+        # Sanitize optional text fields
+        for s_field in [
+            'phone_number', 'gender', 'qualification', 'registration_number',
+            'issuing_authority', 'current_organization', 'professional_bio', 'offline_location'
+        ]:
+            if s_field in mutable_data:
+                val = mutable_data[s_field]
+                if val in ['', 'null', 'None', 'undefined']:
+                    mutable_data[s_field] = ''
+                elif isinstance(val, str):
+                    mutable_data[s_field] = val.strip()
+
+        if mutable_data.get('professional_title') in ['', 'null', 'None', 'undefined', None]:
+            mutable_data['professional_title'] = 'Clinical Nutritionist'
+
+        # Sanitize file fields (remove non-file string placeholders from FormData)
+        for f_field in [
+            'qualification_certificate', 'registration_certificate', 'government_id',
+            'experience_certificate', 'additional_certifications', 'profile_photo'
+        ]:
+            if f_field in mutable_data:
+                val = mutable_data[f_field]
+                if val in ['', 'null', 'None', 'undefined', None] or isinstance(val, str):
+                    mutable_data.pop(f_field, None)
 
         # Sanitize string booleans from FormData
         for b_field in ['is_online_available', 'is_offline_available', 'offline_payment_required']:
             if b_field in mutable_data:
                 val = mutable_data[b_field]
                 if isinstance(val, str):
-                    mutable_data[b_field] = val.lower() == 'true'
+                    mutable_data[b_field] = val.lower() in ('true', '1', 'yes')
 
-        # Parse JSON fields if passed as strings from FormData
+        # Parse and sanitize JSON fields if passed as strings/lists/comma-delimited
         for j_field in ['languages_spoken', 'specializations']:
             if j_field in mutable_data:
                 val = mutable_data[j_field]
-                if isinstance(val, str):
-                    try:
-                        import json
-                        mutable_data[j_field] = json.loads(val)
-                    except Exception:
-                        mutable_data[j_field] = []
+                mutable_data[j_field] = sanitize_json_string_list(val)
 
         return super().to_internal_value(mutable_data)
+
+    def validate_full_name(self, value):
+        val = str(value or '').strip()
+        if len(val) < 2:
+            raise serializers.ValidationError("Full name must be at least 2 characters long.")
+        return val
+
+    def validate_password(self, value):
+        if not value or len(value) < 8:
+            raise serializers.ValidationError("Password must be at least 8 characters long.")
+        return value
+
+    def validate_years_of_experience(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("Years of experience cannot be a negative number.")
+        return value
+
+    def validate_online_price(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("Online price cannot be negative.")
+        return value
+
+    def validate_offline_price(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("Offline price cannot be negative.")
+        return value
 
     def validate_role(self, value):
         allowed_roles = ['user', 'nutritionist']
@@ -241,6 +336,16 @@ class RegisterSerializer(serializers.ModelSerializer):
                 "token": "Invalid OTP verification code."
             })
 
+        # Step 2: Specific validation for nutritionist role
+        role = data.get('role', 'user')
+        if role == 'nutritionist':
+            is_offline = data.get('is_offline_available', False)
+            offline_loc = data.get('offline_location', '')
+            if is_offline and (not offline_loc or len(str(offline_loc).strip()) < 5):
+                raise serializers.ValidationError({
+                    "offline_location": "Please provide a valid clinic/practice address (min 5 characters) for offline consultations."
+                })
+
         return data
 
     def create(self, validated_data):
@@ -254,15 +359,15 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         gender = validated_data.pop('gender', '')
         date_of_birth = validated_data.pop('date_of_birth', None)
-        professional_title = validated_data.pop('professional_title', '')
+        professional_title = validated_data.pop('professional_title', 'Clinical Nutritionist')
         qualification = validated_data.pop('qualification', '')
         registration_number = validated_data.pop('registration_number', '')
         issuing_authority = validated_data.pop('issuing_authority', '')
         years_of_experience = validated_data.pop('years_of_experience', 0)
         current_organization = validated_data.pop('current_organization', '')
         professional_bio = validated_data.pop('professional_bio', '')
-        languages_spoken = validated_data.pop('languages_spoken', [])
-        specializations = validated_data.pop('specializations', [])
+        languages_spoken = sanitize_json_string_list(validated_data.pop('languages_spoken', []))
+        specializations = sanitize_json_string_list(validated_data.pop('specializations', []))
 
         qualification_certificate = validated_data.pop('qualification_certificate', None)
         registration_certificate = validated_data.pop('registration_certificate', None)
@@ -306,7 +411,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             nutri_profile.is_offline_available = is_offline_available
             nutri_profile.offline_location = offline_location or ""
 
-            nutri_profile.professional_title = professional_title or ""
+            nutri_profile.professional_title = professional_title or "Clinical Nutritionist"
             nutri_profile.qualification = qualification or ""
             nutri_profile.registration_number = registration_number or ""
             nutri_profile.issuing_authority = issuing_authority or ""
@@ -329,7 +434,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             if profile_photo:
                 nutri_profile.profile_photo = profile_photo
 
-            # Pricing requires admin approval upon registration
+            # Pricing requires admin approval upon registration if price > 0
             has_price_request = (online_price and float(online_price) > 0) or (offline_price and float(offline_price) > 0)
             if has_price_request:
                 nutri_profile.pending_online_price = online_price

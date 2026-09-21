@@ -312,6 +312,8 @@ class ExpertNutritionistListView(APIView):
             nutritionist_profile__nutritionist_type=NutritionistProfile.NutritionistType.EXPERT
         ).select_related("nutritionist_profile")
         
+        from user.serializers import sanitize_json_string_list
+
         data = []
         for u in experts:
             profile = getattr(u, "nutritionist_profile", None)
@@ -322,7 +324,8 @@ class ExpertNutritionistListView(APIView):
                 "professional_title": profile.professional_title if profile else "Clinical Nutritionist",
                 "qualification": profile.qualification if profile else "",
                 "years_of_experience": profile.years_of_experience if profile else 0,
-                "specializations": profile.specializations if profile else [],
+                "specializations": sanitize_json_string_list(profile.specializations) if profile else [],
+                "languages_spoken": sanitize_json_string_list(profile.languages_spoken) if profile else [],
                 "is_online_available": profile.is_online_available if profile else True,
                 "is_offline_available": profile.is_offline_available if profile else False,
                 "online_price": float(profile.online_price) if profile and profile.online_price is not None else 0.0,
@@ -352,6 +355,7 @@ class MyInHouseNutritionistView(APIView):
 
         nutri = assignment.nutritionist
         profile = getattr(nutri, "nutritionist_profile", None)
+        from user.serializers import sanitize_json_string_list
 
         return Response({
             "nutritionist_id": nutri.id,
@@ -359,6 +363,8 @@ class MyInHouseNutritionistView(APIView):
             "nutritionist_email": nutri.email,
             "professional_title": profile.professional_title if profile else "Clinical Nutritionist",
             "qualification": profile.qualification if profile else "",
+            "specializations": sanitize_json_string_list(profile.specializations) if profile else [],
+            "languages_spoken": sanitize_json_string_list(profile.languages_spoken) if profile else [],
             "is_online_available": profile.is_online_available if profile else True,
             "is_offline_available": profile.is_offline_available if profile else False,
             "online_price": float(profile.online_price) if profile and profile.online_price is not None else 0.0,

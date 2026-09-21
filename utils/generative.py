@@ -40,27 +40,46 @@ def _serialize_lab_report(report: LabReport | None) -> dict:
     if not report: return {}
     return {"waist_circumference_cm": report.waist_circumference_cm, "blood_pressure_systolic": report.blood_pressure_systolic, "blood_pressure_diastolic": report.blood_pressure_diastolic, "fasting_blood_sugar": report.fasting_blood_sugar, "postprandial_sugar": report.postprandial_sugar, "hba1c": report.hba1c, "ldl_cholesterol": report.ldl_cholesterol, "hdl_cholesterol": report.hdl_cholesterol, "triglycerides": report.triglycerides, "crp": report.crp, "esr": report.esr, "uric_acid": report.uric_acid, "creatinine": report.creatinine, "urea": report.urea, "alt": report.alt, "ast": report.ast, "vitamin_d3": report.vitamin_d3, "vitamin_b12": report.vitamin_b12, "tsh": report.tsh, }
 def _calculate_target_nutrients(data: dict) -> dict:
-    """Calculates nutritional targets with robust safety checks."""
-    try:
-        today = date.today(); dob = datetime.strptime(data['date_of_birth'], '%Y-%m-%d').date()
-        age = today.year-dob.year-((today.month,today.day)<(dob.month,today.day))
-        w,h,g,goal,act = data['weight_kg'],data['height_cm'],data['gender'].lower(),data['goal'].lower(),data['activity_level'].lower()
-    except (KeyError,TypeError,AttributeError) as e: raise ValueError(f"Profile incomplete for calculation: {e}")
-    bmr=10*w+6.25*h-5*age+(5 if g=="male" else -161)
-    mults={"sedentary":1.2,"lightly active":1.375,"moderately active":1.55,"very active":1.725,"extra active":1.9}
-    key=next((k for k in mults if act.startswith(k)),"sedentary")
-    rec_cals=bmr*mults[key]
-    is_female=g!='male'
+    """Calculates nutritional targets with robust safety checks and defaults."""
+    if not isinstance(data, dict):
+        data = {}
+    today = date.today()
+    dob_str = data.get('date_of_birth')
+    if dob_str:
+        try:
+            dob = datetime.strptime(str(dob_str).strip(), '%Y-%m-%d').date()
+            age = today.year - dob.year - ((today.month, today.day) < (dob.month, today.day))
+        except Exception:
+            age = 30
+    else:
+        age = 30
+
+    w = float(data.get('weight_kg') or 65.0)
+    h = float(data.get('height_cm') or 170.0)
+    g = str(data.get('gender') or 'other').lower()
+    goal = str(data.get('goal') or 'maintain').lower()
+    act = str(data.get('activity_level') or 'sedentary').lower()
+
+    bmr = 10 * w + 6.25 * h - 5 * age + (5 if g == "male" else -161)
+    mults = {"sedentary": 1.2, "lightly active": 1.375, "light": 1.375, "moderately active": 1.55, "moderate": 1.55, "very active": 1.725, "extra active": 1.9}
+    key = next((k for k in mults if act.startswith(k)), "sedentary")
+    rec_cals = bmr * mults[key]
+    is_female = g != 'male'
     if data.get('is_pregnant') and is_female:
-        goal='maintain weight'; rec_cals += 340 if data.get('current_trimester')==2 else (450 if data.get('current_trimester')==3 else 0)
-    elif data.get('is_breastfeeding') and is_female:rec_cals+=500
-    if"gain"in goal:rec_cals+=400
-    elif"lose"in goal:rec_cals-=500
-    protein_g=round(w*1.8)
-    if(data.get('is_pregnant') or data.get('is_breastfeeding')) and is_female:protein_g=max(protein_g,round(w*1.1)+25)
-    fats_g=round(w*0.8)
-    carbs_g=round((rec_cals-(protein_g*4+fats_g*9))/4) if rec_cals>(protein_g*4+fats_g*9) else 0
-    return{"recommended_calories":round(rec_cals),"protein_g":protein_g,"carbs_g":carbs_g,"fats_g":fats_g}
+        goal = 'maintain weight'
+        rec_cals += 340 if data.get('current_trimester') == 2 else (450 if data.get('current_trimester') == 3 else 0)
+    elif data.get('is_breastfeeding') and is_female:
+        rec_cals += 500
+    if "gain" in goal:
+        rec_cals += 400
+    elif "lose" in goal:
+        rec_cals -= 500
+    protein_g = round(w * 1.8)
+    if (data.get('is_pregnant') or data.get('is_breastfeeding')) and is_female:
+        protein_g = max(protein_g, round(w * 1.1) + 25)
+    fats_g = round(w * 0.8)
+    carbs_g = round((rec_cals - (protein_g * 4 + fats_g * 9)) / 4) if rec_cals > (protein_g * 4 + fats_g * 9) else 0
+    return {"recommended_calories": round(rec_cals), "protein_g": protein_g, "carbs_g": carbs_g, "fats_g": fats_g}
 
 
 def generate_ai_plan_for_patient(profile_dict, report_dict, targets_dict):
