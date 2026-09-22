@@ -222,11 +222,11 @@ class RegisterSerializer(serializers.ModelSerializer):
         extra_kwargs = {'password': {'write_only': True}}
 
     def to_internal_value(self, data):
-        # Create a mutable copy of data while preserving UploadedFile objects
-        if hasattr(data, 'copy'):
-            mutable_data = data.copy()
-        elif hasattr(data, 'dict'):
+        # Create a mutable copy of data as a standard dict while preserving UploadedFile objects
+        if hasattr(data, 'dict'):
             mutable_data = data.dict()
+        elif hasattr(data, 'copy'):
+            mutable_data = {k: data[k] for k in data} if hasattr(data, 'keys') else data.copy()
         else:
             mutable_data = dict(data)
 
