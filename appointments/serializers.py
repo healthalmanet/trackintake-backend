@@ -37,24 +37,30 @@ class AvailabilitySlotSerializer(serializers.ModelSerializer):
             'online_price', 'offline_price', 'offline_payment_required', 'offline_location', 'price'
         ]
 
+    def _get_profile(self, obj):
+        profile = self.context.get("nutritionist_profile")
+        if profile is not None:
+            return profile
+        return getattr(obj.nutritionist, "nutritionist_profile", None)
+
     def get_online_price(self, obj):
-        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        profile = self._get_profile(obj)
         return float(profile.online_price) if profile and profile.online_price is not None else 0.0
 
     def get_offline_price(self, obj):
-        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        profile = self._get_profile(obj)
         return float(profile.offline_price) if profile and profile.offline_price is not None else 0.0
 
     def get_offline_payment_required(self, obj):
-        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        profile = self._get_profile(obj)
         return profile.offline_payment_required if profile else True
 
     def get_offline_location(self, obj):
-        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        profile = self._get_profile(obj)
         return profile.offline_location if profile else ""
 
     def get_price(self, obj):
-        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        profile = self._get_profile(obj)
         if not profile:
             return 0.0
         if obj.slot_type == "IN_PERSON":
@@ -351,20 +357,26 @@ class NutritionistSlotSerializer(serializers.ModelSerializer):
             }
         return None
 
+    def _get_profile(self, obj):
+        profile = self.context.get("nutritionist_profile")
+        if profile is not None:
+            return profile
+        return getattr(obj.nutritionist, "nutritionist_profile", None)
+
     def get_online_price(self, obj):
-        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        profile = self._get_profile(obj)
         return float(profile.online_price) if profile and profile.online_price is not None else 0.0
 
     def get_offline_price(self, obj):
-        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        profile = self._get_profile(obj)
         return float(profile.offline_price) if profile and profile.offline_price is not None else 0.0
 
     def get_offline_payment_required(self, obj):
-        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        profile = self._get_profile(obj)
         return profile.offline_payment_required if profile else True
 
     def get_price(self, obj):
-        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        profile = self._get_profile(obj)
         if not profile:
             return 0.0
         if obj.slot_type == "IN_PERSON":

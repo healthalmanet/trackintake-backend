@@ -37,6 +37,7 @@ from userProfile.serializers import LabReportSerializer, UserProfileSerializer
 from userFood.models import FoodItem, UserMeal
 
 from user.models import User
+from user.serializers import sanitize_json_string_list
 
 from utils.gemini import fetch_nutrition_from_gemini, food_search_gemini
 from utils.generative import (
