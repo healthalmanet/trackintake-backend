@@ -633,12 +633,31 @@ class NutritionistMySlotsView(APIView):
         today = localdate()
         now_time = timezone.localtime().time()
 
+        profile = getattr(request.user, "nutritionist_profile", None)
+
+        base_qs = AvailabilitySlot.objects.filter(nutritionist=request.user)
+
+        # Global summary counts for the nutritionist (fast aggregated counts)
+        total_available = base_qs.filter(is_booked=False).count()
+        total_booked = base_qs.filter(is_booked=True).count()
+        upcoming_count = base_qs.filter(
+            Q(date__gt=today) | Q(date=today, end_time__gte=now_time)
+        ).count()
+        past_count = base_qs.filter(
+            Q(date__lt=today) | Q(date=today, end_time__lt=now_time)
+        ).count()
+
         qs = (
-            AvailabilitySlot.objects
-            .filter(nutritionist=request.user)
+            base_qs
             .select_related(
                 "appointment",
                 "appointment__patient",
+                "nutritionist",
+                "nutritionist__nutritionist_profile",
+            )
+            .prefetch_related(
+                "appointment__feedbacks",
+                "appointment__feedbacks__given_by",
             )
         )
 
@@ -665,7 +684,7 @@ class NutritionistMySlotsView(APIView):
         elif slot_status == "unbooked":
             qs = qs.filter(is_booked=False)
 
-        # ⏳ Filter by Upcoming / Past
+        # ⏳ Filter by Upcoming / Past / All
         if time_horizon == "upcoming":
             qs = qs.filter(
                 Q(date__gt=today) |
@@ -679,13 +698,30 @@ class NutritionistMySlotsView(APIView):
         else:
             qs = qs.order_by("date", "start_time")
 
+        # Single DB query evaluation
+        slot_list = list(qs)
+        unbooked_list = [s for s in slot_list if not s.is_booked]
+        booked_list = [s for s in slot_list if s.is_booked]
+
+        serializer_context = {
+            "request": request,
+            "nutritionist_profile": profile,
+        }
+
         return Response({
             "unbooked_slots": NutritionistSlotSerializer(
-                qs.filter(is_booked=False), many=True
+                unbooked_list, many=True, context=serializer_context
             ).data,
             "booked_slots": NutritionistSlotSerializer(
-                qs.filter(is_booked=True), many=True
+                booked_list, many=True, context=serializer_context
             ).data,
+            "summary": {
+                "total_available": total_available,
+                "total_booked": total_booked,
+                "upcoming_count": upcoming_count,
+                "past_count": past_count,
+                "total_count": total_available + total_booked,
+            }
         })
     
 class SubmitFeedbackView(APIView):
