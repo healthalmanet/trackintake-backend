@@ -149,7 +149,6 @@ INSTALLED_APPS = [
 # MIDDLEWARE
 # ==============================================================================
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware', 
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
@@ -223,7 +222,7 @@ else:
 # ==============================================================================
 # CORS & EMAIL SETTINGS
 # ==============================================================================
-cors_default = "http://localhost:5173,https://trackeats-1.onrender.com,https://trackeats.onrender.com,https://track-eats.onrender.com,https://trackeats-qfl8.onrender.com,https://trackintake-backend.onrender.com,https://trackintake.onrender.com,https://trackintake.co.in"
+cors_default = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:3000,http://127.0.0.1:3000,https://trackeats-1.onrender.com,https://trackeats.onrender.com,https://track-eats.onrender.com,https://trackeats-qfl8.onrender.com,https://trackintake-backend.onrender.com,https://trackintake.onrender.com,https://trackintake.co.in"
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in config("CORS_ALLOWED_ORIGINS", default=cors_default).split(",")
@@ -232,7 +231,7 @@ CORS_ALLOWED_ORIGINS = [
 
 CORS_ALLOW_CREDENTIALS = True
 
-csrf_default = "https://track-eats.onrender.com,https://trackeats.onrender.com,https://trackeats-1.onrender.com,http://localhost:5173,https://trackeats-qfl8.onrender.com,https://trackintake-backend.onrender.com,https://trackintake.onrender.com,https://trackintake.co.in"
+csrf_default = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:3000,http://127.0.0.1:3000,https://track-eats.onrender.com,https://trackeats.onrender.com,https://trackeats-1.onrender.com,https://trackeats-qfl8.onrender.com,https://trackintake-backend.onrender.com,https://trackintake.onrender.com,https://trackintake.co.in"
 CSRF_TRUSTED_ORIGINS = [
     origin.strip()
     for origin in config("CSRF_TRUSTED_ORIGINS", default=csrf_default).split(",")
