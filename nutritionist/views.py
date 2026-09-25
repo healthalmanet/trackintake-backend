@@ -691,6 +691,12 @@ class EditDietPlanView(generics.GenericAPIView):
 
             recommendation.meals = db_meals
 
+        new_suggestions = request.data.get('suggestions')
+        if new_suggestions is not None and isinstance(new_suggestions, list):
+            db_meals = copy.deepcopy(recommendation.meals or {})
+            db_meals['suggestions'] = new_suggestions
+            recommendation.meals = db_meals
+
         update_fields = ['meals', 'updated_at']
 
         if 'nutritionist_comment' in request.data:

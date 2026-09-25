@@ -95,55 +95,23 @@ def generate_ai_plan_for_patient(profile_dict, report_dict, targets_dict):
             return None, "GEMINI_API_KEY is not configured."
 
         prompt = f"""
-You are an expert clinical dietitian generating a complete 3-day meal plan (Day 1, Day 2, Day 3) along with personalized clinical suggestion flags for a patient.
+You are an expert clinical dietitian generating a complete, culturally accurate 3-day meal plan (Day 1, Day 2, Day 3) and 4 concise clinical suggestions for a patient.
 
-User's health profile:
+User Health Profile:
 {json.dumps(profile_dict)}
 
-Lab report (if available):
+Lab Report Biomarkers (if available):
 {json.dumps(report_dict)}
 
-Approximate daily targets to guide portion sizes:
+Daily Nutrient Targets:
 {json.dumps(targets_dict)}
 
---- 🌍 LOCATION-SPECIFIC INSTRUCTIONS ---
-1. The meal plan MUST strictly follow the food culture of:
-   - Country: {profile_dict.get("country", "Not specified")}
-   - City (if available): {profile_dict.get("city", "Not specified")}
-
-2. Use ingredients, cooking styles, and traditional dishes commonly eaten in that specific country and city.
-   - Prefer locally available grains, vegetables, fruits, oils, and proteins.
-   - Avoid foreign or imported dishes unless commonly consumed in that region.
-   - Consider regional cooking oils (e.g., mustard oil in North India, coconut oil in South India, olive oil in Mediterranean countries).
-   - Consider regional staple carbs (e.g., rice vs roti vs millet vs bread depending on geography).
-   - Adjust spice level based on cultural norms of that region.
-
-3. If the country is India:
-   - Adjust dishes based on city/region (North Indian, South Indian, East Indian, West Indian patterns).
-   - Use traditional Indian meal structure.
-
-4. If city is coastal → include more seafood options (if diet_type allows).
-5. If region is known for vegetarian culture → prefer vegetarian options unless user diet_type says otherwise.
-6. Consider seasonal and locally accessible produce in that region.
-
---- 🔴 CRITICAL INSTRUCTIONS 🔴 ---
-1. **EXACT QUANTITIES AND HOUSEHOLD MEASURES IN ALL FOOD NAMES (STRICT REQUIREMENT):**
-   - EVERY SINGLE item, beverage, drink, snack, water, tea, or milk MUST specify exact liquid volume (in ml), weight (in grams), count, or household measure directly in `food_name` and `quantity`.
-   - FORBIDDEN: Generic unmeasured names like "Warm water with lemon", "Skim Milk", "Green Tea", "Roasted Chana", "Greek Yogurt".
-   - MANDATORY EXAMPLES TO FOLLOW:
-     * Instead of "Warm water with lemon" ➔ "100ml Warm water with 1/2 squeezed lemon" (quantity: "100ml water + 1/2 lemon")
-     * Instead of "Skim Milk" ➔ "200ml Skim Milk (1 glass)" (quantity: "200ml")
-     * Instead of "Scrambled Eggs with Spinach and Whole Wheat Roti" ➔ "2 Scrambled Eggs (Anda Bhurji) with 1 cup Spinach and 1 small Whole Wheat Roti (30g)" (quantity: "2 eggs + 1 cup spinach + 1 roti (30g)")
-     * Instead of "Greek Yogurt with Mixed Berries" ➔ "150g Greek Yogurt (plain) with 1/2 cup Mixed Berries" (quantity: "150g yogurt + 1/2 cup berries")
-     * Instead of "Roasted Chana" ➔ "30g Roasted Chana (chickpeas) (2 tbsp)" (quantity: "30g / 2 tbsp")
-     * Instead of "Chicken Curry with Mixed Vegetable Sabzi and Brown Rice" ➔ "150g Chicken Curry (lean breast) with 1 cup Mixed Vegetable Sabzi and 1/2 cup Brown Rice (100g)" (quantity: "150g chicken + 1 cup sabzi + 1/2 cup rice")
-
-2. **Full 3-Day Plan & Variety:** Generate distinct meal plans for "Day 1", "Day 2", and "Day 3". Ensure variety in main dishes across the days (avoid repeating identical main dishes).
-3. **`Sugar` and `Fiber` are NON-NEGOTIABLE:** You MUST include `Sugar` and `Fiber` keys with numeric values for every single food item. Do not omit them under any circumstances.
-4. **Full Nutritional Breakdown:** Provide the complete breakdown: `food_name`, `quantity`, `Gram_Equivalent`, `Calories`, `Protein`, `Carbs`, `Fats`, `Sugar`, and `Fiber`.
-5. **Nutritional Accuracy:** The nutritional values MUST be accurate for the specified food and exact quantity.
-6. **Suggestion Flags:** Include "suggestion_flags" as a JSON list of strings (e.g., ["promote_healthy_fats", "anti_inflammatory"]) based on the health profile and lab report.
-7. **JSON Only:** Output ONLY a single, valid JSON object with the exact schema below.
+--- GUIDELINES ---
+1. Food Culture & Region: Strictly align dishes with Country: {profile_dict.get("country", "Not specified")} and City: {profile_dict.get("city", "Not specified")}. Use staple local carbs, oils, vegetables, and proteins.
+2. Exact Quantities in Names: Every item MUST state exact volume/weight/count in both `food_name` and `quantity` (e.g., "150g Chicken Curry with 1 cup Steamed Rice (100g)").
+3. Complete Nutrition: Provide exact numeric `Gram_Equivalent`, `Calories`, `Protein`, `Carbs`, `Fats`, `Sugar`, and `Fiber` for every meal.
+4. Suggestions: 4 concise cards (1-2 sentences each) for "avoid" (Foods to Avoid), "follow" (Foods to Follow), "exercise" (Exercise & Activity), and "lifestyle" (Lifestyle & Hydration).
+5. Output ONLY valid JSON matching this schema.
 
 --- JSON SCHEMA REQUIRED ---
 {{
@@ -174,17 +142,66 @@ Approximate daily targets to guide portion sizes:
     "Dinner": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
     "Bedtime": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
   }},
+  "suggestions": [
+    {{
+      "id": "sug_1",
+      "key": "avoid",
+      "category": "Foods to Avoid",
+      "title": "<Short title, max 6 words>",
+      "description": "<Concise 1-2 sentence actionable avoidance guidance>"
+    }},
+    {{
+      "id": "sug_2",
+      "key": "follow",
+      "category": "Foods to Follow",
+      "title": "<Short title, max 6 words>",
+      "description": "<Concise 1-2 sentence actionable foods to include>"
+    }},
+    {{
+      "id": "sug_3",
+      "key": "exercise",
+      "category": "Exercise & Activity",
+      "title": "<Short title, max 6 words>",
+      "description": "<Concise 1-2 sentence actionable workout routine>"
+    }},
+    {{
+      "id": "sug_4",
+      "key": "lifestyle",
+      "category": "Lifestyle & Hydration",
+      "title": "<Short title, max 6 words>",
+      "description": "<Concise 1-2 sentence actionable lifestyle/hydration tip>"
+    }}
+  ],
   "suggestion_flags": ["<flag1>", "<flag2>"]
 }}
 """
-        print("Generating complete 3-day plan + flags in single Gemini call...")
-        model = genai.GenerativeModel(model_name="gemini-2.5-flash")
-        config = genai.types.GenerationConfig(temperature=0.4, response_mime_type="application/json")
-        response = model.generate_content(prompt, generation_config=config)
-        full_plan_json = json.loads(response.text)
+        models_to_try = ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-flash-latest"]
+        full_plan_json = None
+        config = genai.types.GenerationConfig(temperature=0.3, response_mime_type="application/json")
+
+        for m_name in models_to_try:
+            try:
+                print(f"Generating complete 3-day plan + suggestions via model {m_name}...")
+                model = genai.GenerativeModel(model_name=m_name)
+                response = model.generate_content(prompt, generation_config=config)
+                if response and response.text:
+                    clean_text = response.text.replace("```json", "").replace("```", "").strip()
+                    full_plan_json = json.loads(clean_text)
+                    if full_plan_json and ("Day 1" in full_plan_json or "suggestions" in full_plan_json):
+                        print(f"✅ Successfully generated plan with {m_name}")
+                        break
+            except Exception as m_err:
+                print(f"Model {m_name} failed: {m_err}")
+                continue
+
+        if not full_plan_json:
+            return None, "Failed to generate plan from AI models."
 
         if "suggestion_flags" not in full_plan_json or not isinstance(full_plan_json["suggestion_flags"], list):
             full_plan_json["suggestion_flags"] = []
+
+        if "suggestions" not in full_plan_json or not isinstance(full_plan_json["suggestions"], list):
+            full_plan_json["suggestions"] = []
 
         return full_plan_json, None
 
