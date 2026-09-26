@@ -1,5 +1,5 @@
 import dotenv
-from userFood.models import FoodItem, FoodType, MealType, Allergen, LEVEL_CHOICES
+from userFood.models import FoodItem, FoodType, MealType, Allergen, LEVEL_CHOICES, normalize_food_name, display_food_name
 from google import genai
 from django.db import transaction
 import json
@@ -8,11 +8,17 @@ import time
 import logging
 import os
 from pathlib import Path
-from userFood.services.attribute_matcher import link_food_attributes
 
-# === Changes made by Ananya (Start) ===
-from userFood.gemini_attributes import apply_gemini_attributes_to_food_if_missing
-# === Changes made by Ananya (End) ===
+# Attribute imports kept for backward compat but no longer called in main flow
+try:
+    from userFood.services.attribute_matcher import link_food_attributes as _link_food_attributes
+except ImportError:
+    _link_food_attributes = None
+
+try:
+    from userFood.gemini_attributes import apply_gemini_attributes_to_food_if_missing as _apply_gemini_attrs
+except ImportError:
+    _apply_gemini_attrs = None
 
 
 class GeminiUnavailableError(Exception):
@@ -54,7 +60,19 @@ def get_nullable_float(data: dict, key: str):
 
 @transaction.atomic
 def fetch_nutrition_from_gemini(food_name: str, quantity: float, unit: str) -> FoodItem:
-    food_query = f"{quantity} {unit} of {food_name}"
+    """
+    Fetches nutritional data from Gemini for a food not found in the DB.
+    Saves/updates the FoodItem permanently (Gemini as data collector, not generator).
+
+    Rules:
+    - name_key is used for all DB lookups (normalized lowercase exact match)
+    - Never overwrites is_verified=True records
+    - Enforces gram_equivalent > 0
+    """
+    # Build clean names for lookup and prompt
+    lookup_key   = normalize_food_name(food_name)    # e.g. "white rice"
+    display_name = display_food_name(food_name)      # e.g. "White Rice"
+    food_query   = f"{quantity} {unit} of {display_name}"
 
     prompt = f"""
 Return nutrition data for: "{food_query}"
@@ -63,6 +81,7 @@ Return nutrition data for: "{food_query}"
 Rules:
 - Match the exact serving size specified.
 - Use reliable nutrition data (USDA-style).
+- In the "food_item.name" field, use the standard, correct English/culinary spelling of the dish (e.g. if the user input contains a typo like "paniir masala" or "chiken curry", correct it to the canonical "Paneer Masala" or "Chicken Curry").
 - Every numeric field MUST be a JSON number (e.g. 320.5), never a string, never null, never a placeholder.
 - Output valid JSON only, no extra text.
 # === Changes made by Ananya (Start) ===
@@ -156,7 +175,8 @@ Now return the same JSON structure with correct values for: "{food_query}"
         if not item_data:
             raise ValueError("Gemini response missing 'food_item'.")
 
-        standardized_name = (item_data.get('name') or food_name).strip()
+        standardized_name = display_food_name(item_data.get('name') or display_name)
+        standardized_key  = normalize_food_name(standardized_name)
 
         def require_float(d, key, fallback=0.0):
             """Parse a numeric value; return fallback only if truly absent or unparseable."""
@@ -168,10 +188,26 @@ Now return the same JSON structure with correct values for: "{food_query}"
             except (ValueError, TypeError):
                 return fallback
 
+        gram_eq = require_float(item_data, 'gram_equivalent', 0.0)
+        if gram_eq <= 0:
+            # Infer gram_equivalent from the query unit as a fallback
+            from userFood.models import MASS_UNIT_TO_GRAMS, SERVING_UNIT_TO_GRAMS
+            unit_lower = (unit or '').lower()
+            if unit_lower in MASS_UNIT_TO_GRAMS:
+                gram_eq = quantity * MASS_UNIT_TO_GRAMS[unit_lower]
+            elif unit_lower in SERVING_UNIT_TO_GRAMS:
+                gram_eq = SERVING_UNIT_TO_GRAMS[unit_lower]
+            else:
+                gram_eq = max(quantity * 100.0, 100.0)
+            logger.warning(
+                "Gemini returned gram_equivalent=0 for '%s'. Inferred %.1fg from unit '%s'.",
+                standardized_name, gram_eq, unit
+            )
+
         food_item_defaults = {
             'default_quantity': require_float(item_data, 'default_quantity', quantity),
             'default_unit':     item_data.get('default_unit') or unit,
-            'gram_equivalent':  require_float(item_data, 'gram_equivalent', 0.0),
+            'gram_equivalent':  gram_eq,
             'source_url':       data.get('source_url') or '',
             'calories':         require_float(item_data, 'calories'),
             'protein':          require_float(item_data, 'protein'),
@@ -201,31 +237,17 @@ Now return the same JSON structure with correct values for: "{food_query}"
             'is_verified':      False,
         }
 
-        # Use name (case-insensitive get, then create/update by exact name)
-        existing = FoodItem.objects.filter(
-            name__iexact=standardized_name).first()
+        # Lookup by exact name (case-insensitive) to prevent duplicates and never mutate existing data
+        existing = FoodItem.objects.filter(name__iexact=standardized_key).first()
+        if not existing:
+            existing = FoodItem.objects.filter(name__iexact=standardized_name).first()
+
         if existing:
-            # === Changes made by Ananya (Start) ===
-            # 1) known-food attributes via attribute_matcher.py
-            # 2) AI-generated attributes for foods not already linked by matcher
-            # (Only applied if FoodItem has no existing attributes; no overwrite.)
-            # === Changes made by Ananya (End) ===
-
-            for attr, val in food_item_defaults.items():
-                setattr(existing, attr, val)
-            existing.save()
-        # === Changes made by Ananya (Start) ===
-        # 1) known-food attributes via attribute_matcher.py
-            link_food_attributes(existing)
-        # 2) AI-generated attributes for foods not already linked by matcher
-            try:
-                apply_gemini_attributes_to_food_if_missing(existing, data)
-            except Exception:
-                logger.exception(
-                    "AI attribute application failed (existing FoodItem).")
-                
-        # === Changes made by Ananya (End) ===
-
+            # If the correct food already exists in our table, DO NOT update or mutate it!
+            logger.info(
+                "Gemini: '%s' already exists in FoodItem table — reusing existing without modifying table.",
+                existing.name
+            )
             food_item_obj = existing
             created = False
         else:
@@ -233,13 +255,8 @@ Now return the same JSON structure with correct values for: "{food_query}"
                 name=standardized_name,
                 **food_item_defaults
             )
-            link_food_attributes(food_item_obj)
-            try:
-               apply_gemini_attributes_to_food_if_missing(food_item_obj, data)
-            except Exception:
-                logger.exception("AI attribute application failed (new FoodItem).")
-
             created = True
+            logger.info("Gemini: created new FoodItem '%s' (key='%s').", standardized_name, standardized_key)
 
         print(f"{'Created' if created else 'Updated'} FoodItem '{food_item_obj.name}': "
               f"cal={food_item_obj.calories} p={food_item_obj.protein} "

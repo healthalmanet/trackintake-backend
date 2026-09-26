@@ -150,13 +150,14 @@ def get_target_nutrients(user, current_date=None):
         "active": 1.6,
         "very_active": 1.75
     }
-    maintenance_calories = bmr * activity_multipliers.get(activity_level.lower(), 1.2)
+    maintenance_calories = bmr * activity_multipliers.get((activity_level or '').lower(), 1.2)
 
     # Goal adjustment
-    if goal.lower() == "gain weight":
+    goal_str = (goal or '').lower()
+    if goal_str == "gain weight":
         recommended_calories = maintenance_calories * 1.15
         target_weight = weight + 5
-    elif goal.lower() == "lose weight":
+    elif goal_str == "lose weight":
         recommended_calories = maintenance_calories * 0.8
         target_weight = weight - 5
     else:

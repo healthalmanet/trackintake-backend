@@ -2,14 +2,14 @@ from subscriptions.utils import require_plan_feature
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from userProfile.models import UserProfile
-from .models import UserMeal, FoodItem, Allergen, FoodType, MealType
+from .models import UserMeal, FoodItem, Allergen, FoodType, MealType, normalize_food_name, display_food_name
 from .serializers import UserMealSerializer, UserMealWithAttributesSerializer
 from utils.utils import get_target_nutrients, send_email_notification_CALORIE, send_sms_notification
 from utils.gemini import fetch_nutrition_from_gemini, GeminiUnavailableError
 from utils.pagination import StandardResultsSetPagination
 from django.db.models import Q
 from django.utils.timezone import make_aware
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, action
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -255,107 +255,68 @@ class UserMealViewSet(viewsets.ModelViewSet):
 # --- THIS IS THE UPDATED FUNCTION ---
     def _find_or_create_food_item(self, food_name: str, quantity: float, unit: str) -> 'FoodItem':
         """
-        Finds a food item in the local database or creates a new one using Gemini.
-        This version standardizes food names by always using the name provided by Gemini.
+        Finds a food item by exact normalized name_key, or creates one via Gemini.
+        No fuzzy matching — an incorrect match is worse than a Gemini lookup.
         """
-        original_food_name = food_name.strip()
-        if not original_food_name:
+        raw = food_name.strip()
+        if not raw:
             raise ValueError("`food_name` cannot be empty.")
 
-        # 1. Exact match — only use it if the record has real nutrition data
-        food = FoodItem.objects.filter(name__iexact=original_food_name).first()
+        lookup_key = normalize_food_name(raw)   # e.g. "white rice"
+
+        # Exact match (case-insensitive) on existing FoodItem.name without modifying FoodItem table
+        food = FoodItem.objects.filter(name__iexact=lookup_key).first()
+        if not food:
+            food = FoodItem.objects.filter(name__iexact=raw).first()
         if food and (food.calories or 0) > 0:
             return food
 
-        # 2. Fuzzy match (multi-word names only) — same guard.
-        # If the Postgres trigram extension is unavailable, fall back to Python fuzzy matching.
-        if len(original_food_name.split()) > 1:
-            try:
-                food = FoodItem.objects.annotate(
-                    similarity=TrigramSimilarity('name', original_food_name)
-                ).filter(similarity__gt=FUZZY_MATCH_THRESHOLD).order_by('-similarity').first()
-                if food and (food.calories or 0) > 0:
-                    return food
-            except Exception as exc:
-                logger.warning(
-                    "Postgres trigram search unavailable or failed for '%s': %s",
-                    original_food_name, str(exc)
-                )
-                all_names = list(
-                    FoodItem.objects.values_list("name", flat=True))
-                if all_names:
-                    match_result = process.extractOne(
-                        original_food_name, all_names)
-                    if match_result and match_result[1] >= int(FUZZY_MATCH_THRESHOLD * 100):
-                        matched_name = match_result[0]
-                        logger.info(
-                            "Python fuzzy match found '%s' for '%s' with score %s",
-                            matched_name, original_food_name, match_result[1]
-                        )
-                        food = FoodItem.objects.filter(
-                            name__iexact=matched_name).first()
-                        if food and (food.calories or 0) > 0:
-                            return food
+        # No match — call Gemini to collect real nutrition data
+        display = display_food_name(raw)        # e.g. "White Rice"
+        print(f"🔄 Gemini fallback for '{display}' (key='{lookup_key}')...")
+        gemini_food = fetch_nutrition_from_gemini(display, quantity, unit)
 
-        # 3. Gemini fallback to get a standardized food item
-        print(
-            f"🔄 Fallback: Querying Gemini API for a profile of '{original_food_name}'...")
-        try:
-            gemini_food_item = fetch_nutrition_from_gemini(
-                original_food_name, quantity, unit)
-        except GeminiUnavailableError:
-            logger.warning(
-                f"⚠️ Gemini unavailable for '{original_food_name}', saving placeholder FoodItem.")
-            gemini_food_item, _ = FoodItem.objects.get_or_create(
-                name__iexact=original_food_name,
-                defaults={
-                    'name': original_food_name.title(),
-                    'calories': 0.0, 'protein': 0.0, 'carbs': 0.0, 'fats': 0.0,
-                    'default_quantity': quantity, 'default_unit': unit,
-                    'gram_equivalent': 0.0, 'is_verified': False,
-                }
-            )
-            return gemini_food_item
+        if not gemini_food or (gemini_food.calories or 0) <= 0:
+            raise ValueError(f"Could not find valid nutrition info for '{display}'")
 
-        if not gemini_food_item:
-            raise ValueError(
-                f"Could not find nutrition info for '{original_food_name}'")
-
-        print(
-            f"✅ Gemini resolved '{original_food_name}' → '{gemini_food_item.name}'.")
-        return gemini_food_item
+        print(f"✅ Gemini resolved '{display}' → '{gemini_food.name}'.")
+        return gemini_food
 
     def create(self, request, *args, **kwargs):
         require_plan_feature(self.request.user, "meal_log_allowed")
 
         def process_meal(item_data):
-            food_name = item_data.get("food_name", "").strip()
-            if not food_name:
+            raw_name = item_data.get("food_name", "").strip()
+            if not raw_name:
                 raise ValueError("`food_name` cannot be empty.")
 
             quantity = float(item_data.get("quantity", 1))
-            unit = item_data.get("unit", "g")
+            unit     = item_data.get("unit", "Gram")
 
-            food = self._find_or_create_food_item(food_name, quantity, unit)
+            food = self._find_or_create_food_item(raw_name, quantity, unit)
+
+            # Store clean display name: use canonical food.name (correcting any typo)
+            clean_name = food.name if food and food.name else display_food_name(raw_name)
 
             consumed_at_str = item_data.get("consumed_at")
-            date_str = item_data.get("date")
+            date_str        = item_data.get("date")
             try:
-                consumed_at = parser.parse(
-                    consumed_at_str) if consumed_at_str else timezone.now()
-                date = parser.parse(date_str).date(
-                ) if date_str else consumed_at.date()
+                consumed_at = parser.parse(consumed_at_str) if consumed_at_str else timezone.now()
+                date        = parser.parse(date_str).date() if date_str else consumed_at.date()
             except Exception as e:
                 raise ValueError(f"Invalid date/time format: {e}")
 
             meal = UserMeal(
-                user=request.user, food_item=food,
-                food_name=food_name,
-                quantity=quantity, unit=unit,
+                user=request.user,
+                food_item=food,
+                food_name=clean_name,
+                quantity=quantity,
+                unit=unit,
                 portion_size=item_data.get("portion_size", "Medium"),
-                meal_type=item_data.get("meal_type", "breakfast"),
+                meal_type=item_data.get("meal_type", "Breakfast"),
                 remarks=item_data.get("remarks", ""),
-                consumed_at=consumed_at, date=date
+                consumed_at=consumed_at,
+                date=date,
             )
             meal.save()
             return meal
@@ -409,25 +370,84 @@ class UserMealViewSet(viewsets.ModelViewSet):
             traceback.print_exc()
             return Response({"error": "An unexpected error occurred while logging meals."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    @action(detail=False, methods=['get'], url_path='recent')
+    def recent(self, request):
+        """
+        GET /logmeals/recent/
+        Returns last 10 distinct foods logged by this user for quick re-log.
+        """
+        seen_keys = set()
+        recent_meals = []
+        qs = UserMeal.objects.filter(
+            user=request.user
+        ).select_related('food_item').order_by('-consumed_at')
+
+        for meal in qs:
+            name = meal.food_name or ''
+            key  = normalize_food_name(name)
+            if key and key not in seen_keys:
+                seen_keys.add(key)
+                recent_meals.append({
+                    'food_name':      name,
+                    'food_item_id':   meal.food_item_id,
+                    'last_quantity':  meal.quantity,
+                    'last_unit':      meal.unit,
+                    'last_calories':  meal.calories,
+                    'gram_equivalent': meal.food_item.gram_equivalent if meal.food_item else None,
+                    'effective_grams': round(meal._get_effective_grams(), 2) if hasattr(meal, '_get_effective_grams') else None,
+                })
+            if len(recent_meals) >= 10:
+                break
+
+        return Response({'recent': recent_meals})
+
+    def update(self, request, *args, **kwargs):
+        return self.partial_update(request, *args, **kwargs)
+
     def partial_update(self, request, *args, **kwargs):
         instance = self.get_object()
         data = request.data
         try:
             with transaction.atomic():
-                if "food_name" in data and data["food_name"].strip().lower() != (instance.food_item.name or "").lower():
-                    instance.food_item = self._find_or_create_food_item(
-                        data["food_name"], float(data.get("quantity", instance.quantity)), data.get(
-                            "unit", instance.unit)
-                    )
-                    instance.food_name = data["food_name"].strip()
+                def _parse_float(val):
+                    if val in (None, ""):
+                        return None
+                    try:
+                        f = float(val)
+                        return f if f > 0 else None
+                    except (TypeError, ValueError):
+                        return None
 
-                instance.quantity = float(
-                    data.get("quantity", instance.quantity))
-                instance.unit = data.get("unit", instance.unit)
-                instance.portion_size = data.get(
-                    "portion_size", instance.portion_size)
-                instance.meal_type = data.get("meal_type", instance.meal_type)
-                instance.remarks = data.get("remarks", instance.remarks)
+                exact_g = _parse_float(data.get("exact_grams")) if "exact_grams" in data else None
+                exact_m = _parse_float(data.get("exact_ml")) if "exact_ml" in data else None
+
+                if exact_g:
+                    instance.quantity = exact_g
+                    instance.unit = "Gram"
+                elif exact_m:
+                    instance.quantity = exact_m
+                    instance.unit = "Milliliters"
+                else:
+                    if "quantity" in data:
+                        instance.quantity = float(data["quantity"])
+                    if "unit" in data:
+                        instance.unit = data["unit"]
+
+                if "food_name" in data and data["food_name"].strip():
+                    raw_name = data["food_name"].strip()
+                    current_food_name = instance.food_item.name if instance.food_item else ""
+                    if raw_name.lower() != current_food_name.lower():
+                        instance.food_item = self._find_or_create_food_item(
+                            raw_name, instance.quantity, instance.unit
+                        )
+                    instance.food_name = display_food_name(raw_name)
+
+                if "portion_size" in data:
+                    instance.portion_size = data["portion_size"]
+                if "meal_type" in data:
+                    instance.meal_type = data["meal_type"]
+                if "remarks" in data:
+                    instance.remarks = data["remarks"]
 
                 if "consumed_at" in data:
                     instance.consumed_at = parser.parse(data["consumed_at"])
