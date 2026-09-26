@@ -3,6 +3,9 @@ from django.contrib.postgres.fields import ArrayField
 from django.forms import ValidationError
 from django.utils import timezone
 from django.conf import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 ################################### _---------------------------------Normalize----------##################################
@@ -144,29 +147,65 @@ class FoodItem(models.Model):
 
 
 ############################### ----------------------------Foood Table End_---------------------################################
+
+
+def normalize_food_name(raw: str) -> str:
+    """Returns lowercase comparison key for exact DB lookup.
+    '  WHITE   RICE  ' → 'white rice'
+    """
+    return ' '.join(raw.strip().lower().split())
+
+
+def display_food_name(raw: str) -> str:
+    """Returns clean display name for storing and showing to user.
+    '  WHITE   RICE  ' → 'White Rice'
+    """
+    return ' '.join(raw.strip().split()).title()
+
+
 # Strict mass/volume units — convert directly to grams (1 ml ≈ 1 g water-density assumption)
 MASS_UNIT_TO_GRAMS = {
-    "g": 1.0, "gram": 1.0,
-    "kg": 1000.0, "kilogram": 1000.0,
-    "mg": 0.001, "milligram": 0.001,
-    "milliliters": 1.0, "ml": 1.0,
-    "liters": 1000.0, "liter": 1000.0, "l": 1000.0,
+    "gram": 1.0, "g": 1.0,
+    "kilogram": 1000.0, "kg": 1000.0,
+    "milligram": 0.001, "mg": 0.001,
+    "milliliter": 1.0, "milliliters": 1.0, "ml": 1.0,
+    "liter": 1000.0, "liters": 1000.0, "l": 1000.0,
 }
 
-# Serving/household units — approximate grams per 1 unit
-# food_item.gram_equivalent overrides these when the FoodItem has a known serving weight
+# Household/Indian units — approximate grams per 1 unit
+# These are the defaults; food_item.gram_equivalent is the authoritative serving weight
 SERVING_UNIT_TO_GRAMS = {
-    "cup": 240.0,
-    "glass": 350.0,     # tall glass ≈ 350 ml
-    "bowl": 300.0,
+    # Bowls (default bowl = 150g as specified)
+    "small bowl": 100.0,
+    "bowl": 150.0,
+    "big bowl": 250.0,
+    # Plates
+    "small plate": 200.0,
     "plate": 350.0,
+    "big plate": 500.0,
+    # Glasses (standard glass = 250ml/250g)
+    "small glass": 150.0,
+    "glass": 250.0,
+    "large glass": 350.0,
+    # Cups
+    "small cup": 120.0,
+    "cup": 240.0,
+    # Pieces
+    "small piece": 60.0,
     "piece": 100.0,
+    "large piece": 150.0,
+    # Slices & spoons
     "slice": 30.0,
-    "tbsp": 15.0,
-    "tablespoon": 15.0,
-    "tsp": 5.0,
-    "teaspoon": 5.0,
+    "tbsp": 15.0, "tablespoon": 15.0,
+    "tsp": 5.0, "teaspoon": 5.0,
+    # Indian units
+    "katori": 150.0,    # small steel bowl
+    "vati": 100.0,      # smaller katori
+    "karchi": 50.0,     # ladle
+    "muthhi": 30.0,     # fistful
     "handful": 30.0,
+    "thali": 400.0,     # full thali plate
+    # Misc
     "pinch": 0.5,
     "dash": 1.0,
     "sprinkle": 2.0,
@@ -178,41 +217,79 @@ class UserMeal(models.Model):
     Represents a single meal entry for a user.
     The nutritional values are a snapshot calculated at the time of saving.
     """
-    # --- These Choices must be exactly the same ---
+    # --- Choices ---
     UNIT_CHOICES = [
-        ("Gram", "Gram"), ("Kilogram", "Kilogram"), ("Milliliters", "Milliliters"),
-        ("Liters", "Liters"), ("Cup", "Cup"), ("Bowl", "Bowl"), ("Piece", "Piece"),
-        ("Tbsp", "Tablespoon"), ("Tsp", "Teaspoon"), ("Slice", "Slice"),
-        ("Plate", "Plate"), ("Handful", "Handful"), ("Pinch", "Pinch"),
-        ("Dash", "Dash"), ("Sprinkle", "Sprinkle"), ("Other", "Other"),
+        # --- Exact mass/volume ---
+        ("Gram",       "Gram (g)"),
+        ("Kilogram",   "Kilogram (kg)"),
+        ("Milliliter", "Milliliter (ml)"),
+        ("Liter",      "Liter (L)"),
+        # --- Bowl ---
+        ("Small Bowl", "Small Bowl (~150g)"),
+        ("Bowl",       "Bowl (~300g)"),
+        ("Big Bowl",   "Big Bowl (~450g)"),
+        # --- Plate ---
+        ("Small Plate", "Small Plate (~200g)"),
+        ("Plate",       "Plate (~350g)"),
+        ("Big Plate",   "Big Plate (~500g)"),
+        # --- Glass ---
+        ("Small Glass", "Small Glass (~200ml)"),
+        ("Glass",       "Glass (~350ml)"),
+        ("Large Glass", "Large Glass (~500ml)"),
+        # --- Cup ---
+        ("Small Cup", "Small Cup (~120ml)"),
+        ("Cup",       "Cup (~240ml)"),
+        # --- Piece ---
+        ("Small Piece", "Small Piece (~60g)"),
+        ("Piece",       "Piece (~100g)"),
+        ("Large Piece", "Large Piece (~150g)"),
+        # --- Slice & Spoon ---
+        ("Slice", "Slice (~30g)"),
+        ("Tbsp",  "Tablespoon (~15g)"),
+        ("Tsp",   "Teaspoon (~5g)"),
+        # --- Indian ---
+        ("Katori",  "Katori (~150g)"),
+        ("Vati",    "Vati (~100g)"),
+        ("Karchi",  "Ladle/Karchi (~50g)"),
+        ("Muthhi",  "Muthhi/Fistful (~30g)"),
+        ("Handful", "Handful (~30g)"),
+        ("Thali",   "Thali (~400g)"),
+        # --- Misc ---
+        ("Pinch",    "Pinch (~0.5g)"),
+        ("Other",    "Other"),
     ]
     MEAL_CHOICES = [
-        ("Early-Morning", "Early-Morning"), ("Breakfast", "Breakfast"),
-        ("Mid-Morning Snack", "Mid-Morning Snack"), ("Lunch", "Lunch"),
-        ("Afternoon Snack", "Afternoon Snack"), ("Dinner", "Dinner"),
-        ("Bedtime", "Bedtime"),
+        ("Early-Morning",     "Early-Morning"),
+        ("Breakfast",         "Breakfast"),
+        ("Mid-Morning Snack", "Mid-Morning Snack"),
+        ("Lunch",             "Lunch"),
+        ("Afternoon Snack",   "Afternoon Snack"),
+        ("Dinner",            "Dinner"),
+        ("Bedtime",           "Bedtime"),
     ]
-
     PORTION_CHOICES = [
-        ("Small", "Small"),
+        ("Small",  "Small"),
         ("Medium", "Medium"),
-        ("Large", "Large"),
+        ("Large",  "Large"),
     ]
+    # Kept for backward compatibility only — NOT used in nutrition calculation
     PORTION_MULTIPLIERS = {"Small": 0.75, "Medium": 1.0, "Large": 1.5}
 
-    # --- These Core Fields must be exactly the same ---
-    user = models.ForeignKey(settings.AUTH_USER_MODEL,
-                             on_delete=models.CASCADE)
+    # --- Core Fields ---
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     food_item = models.ForeignKey(
         'FoodItem', on_delete=models.SET_NULL, null=True, blank=True)
-    food_name = models.CharField(max_length=150, blank=True, null=True)
+    food_name = models.CharField(
+        max_length=150, blank=True, null=True,
+        help_text="Clean display name, stored normalized. Never raw user input.")
 
-    quantity = models.FloatField()
-    unit = models.CharField(
-        max_length=20, choices=UNIT_CHOICES, default="Gram")
+    quantity  = models.FloatField()
+    unit      = models.CharField(max_length=20, choices=UNIT_CHOICES, default="Gram")
+    # portion_size kept for backward compat — NOT used in nutrition calculation
     portion_size = models.CharField(
         max_length=10, choices=PORTION_CHOICES, default="Medium", blank=True)
-    meal_type = models.CharField(max_length=30, choices=MEAL_CHOICES)
+
+    meal_type   = models.CharField(max_length=30, choices=MEAL_CHOICES)
 
     consumed_at = models.DateTimeField(blank=True, null=True)
     date = models.DateField(blank=True, null=True)
@@ -229,109 +306,81 @@ class UserMeal(models.Model):
     glycemic_load = models.FloatField(blank=True, null=True)
     food_type = models.CharField(max_length=30, blank=True, null=True)
 
-    # --- THIS IS THE ONLY PART WITH DIFFERENT LOGIC ---
+    def _get_effective_grams(self) -> float:
+        """
+        Determines how many grams were actually consumed, using priority order:
+          1. exact_grams — user entered exact solid weight
+          2. exact_ml    — user entered exact liquid volume (1ml ≈ 1g)
+          3. Mass unit   — Gram/Kilogram/Milliliter/Liter → direct conversion
+          4. Household/Indian unit — lookup in SERVING_UNIT_TO_GRAMS
+          5. Fallback    — quantity × food_item.gram_equivalent (X servings)
+        """
+        qty        = self.quantity or 1.0
+        unit_lower = (self.unit or '').lower().strip()
+        base_grams = float(self.food_item.gram_equivalent) if (
+            self.food_item and self.food_item.gram_equivalent and self.food_item.gram_equivalent > 0
+        ) else None
+
+        # Mass/volume unit
+        if unit_lower in MASS_UNIT_TO_GRAMS:
+            return qty * MASS_UNIT_TO_GRAMS[unit_lower]
+
+        # Household/Indian unit
+        if unit_lower in SERVING_UNIT_TO_GRAMS:
+            return qty * SERVING_UNIT_TO_GRAMS[unit_lower]
+
+        # Fallback — treat quantity as number of standard servings
+        if base_grams:
+            return qty * base_grams
+
+        return qty  # last resort
+
     def _calculate_and_set_nutrients(self):
-        """Calculates nutrients snapshot, factoring:
-        - quantity + unit conversion
-        - portion_size multiplier
-        - selected UserMealAttribute nutrition multipliers (if any)
+        """
+        Calculates and stores a proportional nutrition snapshot.
+
+        Formula:
+          factor   = effective_grams / food_item.gram_equivalent
+          nutrient = food_item.nutrient × factor
+
+        NOTE: portion_size is NOT used in this calculation.
+              Unit name encodes the size (Small Bowl / Bowl / Big Bowl).
         """
         if not self.food_item:
             return
 
-        food_item = self.food_item
-        user_quantity = self.quantity
-        user_unit_lower = (self.unit or "").lower()
-        portion_multiplier = self.PORTION_MULTIPLIERS.get(self.portion_size, 1.0)
+        food = self.food_item
+        base_grams = float(food.gram_equivalent) if (
+            food.gram_equivalent and food.gram_equivalent > 0
+        ) else None
 
-        base_grams = (
-            food_item.gram_equivalent
-            if (food_item.gram_equivalent and food_item.gram_equivalent > 0)
-            else (food_item.default_quantity or 100.0)
+        if not base_grams:
+            logger.warning(
+                "UserMeal: '%s' has no gram_equivalent — nutrition calc skipped.", food.name)
+            return
+
+        effective_grams = self._get_effective_grams()
+        factor          = effective_grams / base_grams
+
+        logger.info(
+            "Nutrition calc: food='%s' base=%.1fg effective=%.1fg factor=%.3f "
+            "unit='%s' qty=%.1f",
+            food.name, base_grams, effective_grams, factor,
+            self.unit, self.quantity or 0
         )
-        base_grams = float(base_grams) if base_grams else 100.0
 
-        factor = 1.0
-        if user_unit_lower in MASS_UNIT_TO_GRAMS:
-            logged_grams = user_quantity * MASS_UNIT_TO_GRAMS[user_unit_lower]
-            factor = (logged_grams / base_grams) * portion_multiplier
+        def calc(val):
+            return round(val * factor, 2) if val is not None else None
 
-        elif user_unit_lower in SERVING_UNIT_TO_GRAMS:
-            unit_grams = SERVING_UNIT_TO_GRAMS[user_unit_lower]
-            logged_grams = user_quantity * unit_grams
-            factor = (logged_grams / base_grams) * portion_multiplier
-
-        else:
-            factor = user_quantity * portion_multiplier
-
-        # Apply attribute nutrition multipliers (backward compatible)
-        attribute_multiplier = 1.0
-        # DEBUG/TRACE: identify attribute multipliers applied
-        debug_lines = []
-        try:
-            selected = self.meal_attributes.select_related('selected_option').all()
-            if selected.exists():
-                attribute_multiplier = 1.0
-                for ma in selected:
-                    m = getattr(ma.selected_option, 'nutrition_multiplier', 1.0) if ma.selected_option_id else 1.0
-                    try:
-                        m_float = float(m)
-                    except (TypeError, ValueError):
-                        m_float = 1.0
-                    attribute_multiplier *= m_float
-
-                    # Trace per attribute
-                    try:
-                        debug_lines.append(
-                            f"attr={ma.attribute.name if ma.attribute_id else None} opt={ma.selected_option.value if ma.selected_option_id else None} mult={m_float}"
-                        )
-                    except Exception:
-                        debug_lines.append("attr_mult_trace=unavailable")
-        except Exception:
-            attribute_multiplier = 1.0
-
-        # Extra trace for the Size attribute (if present)
-        try:
-            size_attr = next((ma for ma in getattr(self, 'meal_attributes', []).all() if getattr(ma.attribute, 'name', None) == 'Size'), None)
-            size_value = size_attr.selected_option.value if size_attr and size_attr.selected_option_id else None
-            size_mult = size_attr.selected_option.nutrition_multiplier if size_attr and size_attr.selected_option_id else None
-            debug_lines.append(f"SIZE_SELECTED={size_value} SIZE_MULT={size_mult}")
-        except Exception:
-            debug_lines.append("SIZE_TRACE=unavailable")
-
-        # Apply attribute multipliers
-        factor_before = factor
-        factor = factor * attribute_multiplier
-
-        # Debug output: only via logger (no stdout)
-        try:
-            logger = logging.getLogger(__name__)
-            logger.info(
-                "UserMeal attr nutrition calc: meal_id=%s food=%s portion_size=%s factor_before=%s attr_multiplier=%s factor_after=%s traces=[%s]",
-                self.id,
-                getattr(food_item, 'name', None),
-                self.portion_size,
-                factor_before,
-                attribute_multiplier,
-                factor,
-                " | ".join(debug_lines)[:1500],
-            )
-        except Exception:
-            pass
-
-
-        def calc(value):
-            return round(value * factor, 2) if value is not None else None
-
-        self.calories = calc(food_item.calories)
-        self.protein = calc(food_item.protein)
-        self.carbs = calc(food_item.carbs)
-        self.fats = calc(food_item.fats)
-        self.sugar = calc(food_item.sugar)
-        self.fiber = calc(food_item.fiber)
-        self.estimated_gi = food_item.estimated_gi
-        self.glycemic_load = calc(food_item.glycemic_load)
-        self.food_type = food_item.food_types.first().name if food_item.food_types.exists() else 'N/A'
+        self.calories      = calc(food.calories)
+        self.protein       = calc(food.protein)
+        self.carbs         = calc(food.carbs)
+        self.fats          = calc(food.fats)
+        self.sugar         = calc(food.sugar)
+        self.fiber         = calc(food.fiber)
+        self.estimated_gi  = food.estimated_gi   # GI is a property of the food, not quantity
+        self.glycemic_load = calc(food.glycemic_load)
+        self.food_type     = food.food_types.first().name if food.food_types.exists() else 'N/A'
 
 
     # --- These helper methods must be exactly the same ---

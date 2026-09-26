@@ -55,24 +55,16 @@ class UserMealSerializer(serializers.ModelSerializer):
     A robust serializer for the UserMeal model that safely handles
     relationships and provides clear input/output fields.
     """
-    # Use 'source' for direct relationships, but ensure it's safe.
-    # The 'food_name' on the UserMeal model itself is the source of truth for output.
-    food_name_display = serializers.CharField(
-        source='food_name', read_only=True)
+    food_name_display = serializers.CharField(source='food_name', read_only=True)
+    food_name_input   = serializers.CharField(write_only=True, required=True, source='food_name')
 
-    # For INPUT, we need a write-only field to accept the user's food name search query.
-    food_name_input = serializers.CharField(
-        write_only=True, required=True, source='food_name')
-
-    # --- The Fix for gram_equivalent ---
-    # Use a SerializerMethodField to safely access the related FoodItem's data.
-    gram_equivalent = serializers.SerializerMethodField()
+    gram_equivalent  = serializers.SerializerMethodField()
+    effective_grams  = serializers.SerializerMethodField()
 
     class Meta:
         model = UserMeal
         fields = [
             "id",
-            # Fields for OUTPUT (what the user sees)
             "food_name_display",
             "quantity",
             "unit",
@@ -81,43 +73,35 @@ class UserMealSerializer(serializers.ModelSerializer):
             "remarks",
             "consumed_at",
             "date",
+            # Computed read-only
             "calories", "protein", "carbs", "fats", "sugar", "fiber",
             "estimated_gi", "glycemic_load", "food_type",
             "gram_equivalent",
-
-            # Field for INPUT (what the user sends)
-            "portion_size",
+            "effective_grams",
+            # Input only
             "food_name_input",
         ]
-
-        # All nutritional data is calculated by the model's save() method,
-        # so these fields are correctly read-only from the API's perspective.
         read_only_fields = [
-            "id", "calories", "protein", "carbs", "fats", "sugar",
-            "fiber", "estimated_gi", "glycemic_load", "food_type",
+            "id", "effective_grams", "calories", "protein", "carbs", "fats",
+            "sugar", "fiber", "estimated_gi", "glycemic_load", "food_type",
             "gram_equivalent",
         ]
 
-        # We don't need to specify 'user' as it's set in the view.
-        # We don't need 'food_item_id' as the view handles it via 'food_name_input'.
-
     def get_gram_equivalent(self, obj: UserMeal) -> float | None:
-        """
-        Safely gets the gram_equivalent from the related food_item.
-        Returns None if the food_item does not exist, preventing crashes.
-        """
-        if obj.food_item:
-            return obj.food_item.gram_equivalent
-        return None
+        """Safely gets the gram_equivalent from the related food_item."""
+        return obj.food_item.gram_equivalent if obj.food_item else None
+
+    def get_effective_grams(self, obj: UserMeal) -> float | None:
+        """Returns how many grams were used in the nutrition calculation."""
+        try:
+            return round(obj._get_effective_grams(), 2)
+        except Exception:
+            return None
 
     def create(self, validated_data):
-        # The view now handles the creation logic, so this can be simplified.
-        # However, it's good practice to handle it here if the view were simpler.
-        # We will let the view's 'process_meal' function handle the logic.
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        # The view also handles the update logic.
         return super().update(instance, validated_data)
 
 
@@ -252,16 +236,11 @@ class UserMealAttributeSerializer(serializers.ModelSerializer):
 
 
 class UserMealWithAttributesSerializer(serializers.ModelSerializer):
-    """Extended UserMeal serializer that includes selected attributes."""
+    """Extended UserMeal serializer — includes exact overrides and effective_grams."""
     food_name_display = serializers.CharField(source='food_name', read_only=True)
-    food_name_input = serializers.CharField(write_only=True, required=True, source='food_name')
-    gram_equivalent = serializers.SerializerMethodField()
-    meal_attributes = UserMealAttributeSerializer(many=True, read_only=True)
-
-    # Optional normalized fields for UI/backward compatibility
-    # (derived from meal_attributes; do not change stored contract)
-    selected_size = serializers.SerializerMethodField()
-    flour_type = serializers.SerializerMethodField()
+    food_name_input   = serializers.CharField(write_only=True, required=True, source='food_name')
+    gram_equivalent   = serializers.SerializerMethodField()
+    effective_grams   = serializers.SerializerMethodField()
 
     class Meta:
         model = UserMeal
@@ -271,7 +250,6 @@ class UserMealWithAttributesSerializer(serializers.ModelSerializer):
             "quantity",
             "unit",
             "portion_size",
-            "selected_size",
             "meal_type",
             "remarks",
             "consumed_at",
@@ -279,37 +257,21 @@ class UserMealWithAttributesSerializer(serializers.ModelSerializer):
             "calories", "protein", "carbs", "fats", "sugar", "fiber",
             "estimated_gi", "glycemic_load", "food_type",
             "gram_equivalent",
-            "meal_attributes",
-            "flour_type",
+            "effective_grams",
             "food_name_input",
         ]
-
-
         read_only_fields = [
-            "id", "calories", "protein", "carbs", "fats", "sugar",
-            "fiber", "estimated_gi", "glycemic_load", "food_type",
-            "gram_equivalent", "meal_attributes",
+            "id", "calories", "protein", "carbs", "fats",
+            "sugar", "fiber", "estimated_gi", "glycemic_load", "food_type",
+            "gram_equivalent",
+            "effective_grams",
         ]
 
     def get_gram_equivalent(self, obj: UserMeal) -> float | None:
-        if obj.food_item:
-            return obj.food_item.gram_equivalent
-        return None
+        return obj.food_item.gram_equivalent if obj.food_item else None
 
-    def _get_attr_value_by_name(self, obj: UserMeal, attr_name: str):
+    def get_effective_grams(self, obj: UserMeal) -> float | None:
         try:
-            for ma in getattr(obj, 'meal_attributes', []).all() if hasattr(getattr(obj, 'meal_attributes', None), 'all') else getattr(obj, 'meal_attributes', []):
-                if getattr(ma.attribute, 'name', None) == attr_name:
-                    return getattr(ma.selected_option, 'value', None)
+            return round(obj._get_effective_grams(), 2)
         except Exception:
-            pass
-        return None
-
-    def get_selected_size(self, obj: UserMeal):
-        # If your UI expects {portion_size: "Medium"} this will still be driven by stored field.
-        # This field helps when UI reads attribute 'Size'.
-        return self._get_attr_value_by_name(obj, 'Size')
-
-    def get_flour_type(self, obj: UserMeal):
-        return self._get_attr_value_by_name(obj, 'Flour Type')
-
+            return None
