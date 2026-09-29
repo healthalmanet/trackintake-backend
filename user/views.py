@@ -1,4 +1,5 @@
 
+import sys
 import random
 from django.core.cache import cache  # <-- THIS IS THE FIX
 from django.shortcuts import render
@@ -62,7 +63,9 @@ class SendOTPView(views.APIView):
         # Store OTP for 10 min
         cache.set(f"otp_{email}", str(otp).strip(), timeout=600)
 
-        print(f"DEBUG: OTP for {email} is {otp}")  # <-- ADDED FOR TERMINAL LOGGING
+        import sys
+        if 'test' not in sys.argv:
+            print(f"DEBUG: OTP for {email} is {otp}")  # <-- ADDED FOR TERMINAL LOGGING
 
         # RESEND SEND
         from utils.resend_email import send_resend_email
@@ -99,7 +102,8 @@ class VerifyOTPView(views.APIView):
         cached_otp = cache.get(f"otp_{email}")
         cached_token = cache.get(f"verification_token_{email}")
 
-        print(f"DEBUG: VerifyOTP for email='{email}', submitted_otp='{otp}', cached_otp='{cached_otp}', cached_token={'exists' if cached_token else 'none'}")
+        if 'test' not in sys.argv:
+            print(f"DEBUG: VerifyOTP for email='{email}', submitted_otp='{otp}', cached_otp='{cached_otp}', cached_token={'exists' if cached_token else 'none'}")
 
         # If already verified and token exists, return it
         if cached_token and (not cached_otp or str(cached_otp).strip() == otp):

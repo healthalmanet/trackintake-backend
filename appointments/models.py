@@ -219,6 +219,20 @@ class AvailabilitySlot(models.Model):
             f"{self.date} {self.start_time}-{self.end_time}"
         )
 
+    @property
+    def appointment(self):
+        """
+        Returns the active confirmed appointment for this slot (or the most recent).
+        Backwards compatible with slot.appointment usage across the codebase.
+        """
+        if hasattr(self, "_prefetched_objects_cache") and "appointments" in self._prefetched_objects_cache:
+            confirmed = [a for a in self.appointments.all() if a.status == "CONFIRMED"]
+            if confirmed:
+                return confirmed[0]
+            all_appts = list(self.appointments.all())
+            return all_appts[0] if all_appts else None
+        return self.appointments.filter(status="CONFIRMED").first() or self.appointments.first()
+
 
 # ======================================================
 # Appointment
@@ -246,6 +260,27 @@ class Appointment(models.Model):
         ("ADMIN", "Admin"),
     )
 
+    CANCELLED_BY = (
+        ("PATIENT", "Patient"),
+        ("NUTRITIONIST", "Nutritionist"),
+        ("ADMIN", "Admin"),
+    )
+
+    PAYMENT_STATUS = (
+        ("UNPAID", "Unpaid / Pay at Clinic"),
+        ("PAID", "Paid Online"),
+        ("PENDING_REFUND", "Pending Refund"),
+        ("REFUNDED", "Refunded"),
+        ("NO_REFUND", "No Refund Applicable"),
+    )
+
+    PAYOUT_STATUS = (
+        ("PENDING", "Pending Admin Payout"),
+        ("PAID", "Paid Out to Nutritionist"),
+        ("CANCELLED", "Cancelled (No Payout)"),
+        ("NOT_APPLICABLE", "Not Applicable"),
+    )
+
     patient = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -271,12 +306,19 @@ class Appointment(models.Model):
         db_index=True,
     )
 
-    slot = models.OneToOneField(
+    slot = models.ForeignKey(
         AvailabilitySlot,
-        on_delete=models.CASCADE,
-        related_name="appointment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="appointments",
         db_index=True,
     )
+
+    # Cached slot timing for historical integrity after cancellation / rebooking
+    slot_date = models.DateField(null=True, blank=True, db_index=True)
+    slot_start_time = models.TimeField(null=True, blank=True)
+    slot_end_time = models.TimeField(null=True, blank=True)
 
     appointment_category = models.CharField(
         max_length=20,
@@ -307,6 +349,64 @@ class Appointment(models.Model):
     notes = models.TextField(blank=True, default="")
     instructions = models.TextField(blank=True, default="")
 
+    # ❌ Cancellation & Refund tracking
+    cancelled_by = models.CharField(
+        max_length=20,
+        choices=CANCELLED_BY,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.TextField(blank=True, default="")
+
+    # 🔄 Rescheduling tracking (patient capped at 2, nutritionist unlimited)
+    reschedule_count = models.PositiveIntegerField(default=0)
+    rescheduled_at = models.DateTimeField(null=True, blank=True)
+
+    # 💰 Payment & Refund Status (Admin Managed)
+    fee_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0.00,
+        help_text="Consultation fee received by platform",
+    )
+    payment_status = models.CharField(
+        max_length=25,
+        choices=PAYMENT_STATUS,
+        default="UNPAID",
+        db_index=True,
+    )
+    refund_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0.00,
+        help_text="Amount to be refunded to patient if eligible",
+    )
+    refund_notes = models.TextField(blank=True, default="")
+    refunded_at = models.DateTimeField(null=True, blank=True)
+
+    # 💼 Nutritionist Earnings & Payout Status (Admin Managed)
+    payout_status = models.CharField(
+        max_length=25,
+        choices=PAYOUT_STATUS,
+        default="NOT_APPLICABLE",
+        db_index=True,
+    )
+    payout_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0.00,
+        help_text="Net payout owed/transferred to nutritionist",
+    )
+    payout_marked_at = models.DateTimeField(null=True, blank=True)
+    payout_transaction_ref = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Admin transaction reference for payout disbursement",
+    )
+
     created_at = models.DateTimeField(
         auto_now_add=True,
         db_index=True,
@@ -317,6 +417,7 @@ class Appointment(models.Model):
         indexes = [
             models.Index(fields=["nutritionist", "status"]),
             models.Index(fields=["patient", "created_at"]),
+            models.Index(fields=["payment_status", "payout_status"]),
         ]
 
     def clean(self):
@@ -421,3 +522,34 @@ class AppointmentFeedback(models.Model):
 
     def __str__(self):
         return f"{self.role} feedback for appointment {self.appointment.id}"
+
+
+# ======================================================
+# Admin Proxy Models for Direct Financial Management
+# ======================================================
+class PendingRefundManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(payment_status="PENDING_REFUND")
+
+
+class PendingRefundAppointment(Appointment):
+    objects = PendingRefundManager()
+
+    class Meta:
+        proxy = True
+        verbose_name = "Pending User Refund"
+        verbose_name_plural = "Pending User Refunds (Whom to Refund)"
+
+
+class PendingPayoutManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(payout_status="PENDING")
+
+
+class PendingPayoutAppointment(Appointment):
+    objects = PendingPayoutManager()
+
+    class Meta:
+        proxy = True
+        verbose_name = "Pending Practitioner Payout"
+        verbose_name_plural = "Pending Practitioner Payouts (Whom to Pay)"

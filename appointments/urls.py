@@ -94,6 +94,8 @@ from .views import (
     NutritionistMySlotsView,
     NutritionistDeleteSlotView,
     CancelAppointmentView,
+    RescheduleAppointmentView,
+    NutritionistPayoutsView,
     DeleteSlotView,
     MyInHouseNutritionistView,
     ExpertNutritionistListView,
@@ -115,11 +117,14 @@ urlpatterns = [
     path("nutritionist/me/slots/<int:pk>/", NutritionistDeleteSlotView.as_view()),
     path("nutritionist/my-slots/", NutritionistMySlotsView.as_view()),
     path("nutritionist/slots/<int:pk>/delete/", DeleteSlotView.as_view()),
+    path("nutritionist/payouts/", NutritionistPayoutsView.as_view(), name="nutritionist-payouts"),
     path("me/in-house-nutritionist/", MyInHouseNutritionistView.as_view()),
     path("expert-nutritionists/", ExpertNutritionistListView.as_view(), name="expert-nutritionists"),
 
-    # Actions
-    path("appointments/<int:pk>/cancel/", CancelAppointmentView.as_view()),
+    # Actions: Cancel & Reschedule
+    path("appointments/<int:pk>/cancel/", CancelAppointmentView.as_view(), name="cancel-appointment"),
     path("<int:pk>/cancel/", CancelAppointmentView.as_view()),
+    path("appointments/<int:pk>/reschedule/", RescheduleAppointmentView.as_view(), name="reschedule-appointment"),
+    path("<int:pk>/reschedule/", RescheduleAppointmentView.as_view()),
     path("<int:appointment_id>/feedback/", SubmitFeedbackView.as_view(), name="submit-feedback"),
 ]

@@ -12,6 +12,7 @@ from .models import AppointmentReminder,AppointmentFeedback
 from nutritionist.models import PatientAssignment
 from subscriptions.services import consume_consultation
 from appointments.zoom_service import create_zoom_meeting
+from .email_utils import send_booking_confirmation_emails
 User = get_user_model()
 
 
@@ -247,16 +248,39 @@ class AppointmentCreateSerializer(serializers.Serializer):
                     print(f"⚠️ Zoom link generation error: {e}")
                     meeting_link = f"https://zoom.us/j/trackintake-{slot.id}"
 
-            # ✅ CREATE APPOINTMENT WITH LINK
+            # Calculate financial parameters
+            fee_amount = real_price
+            payout_amount = real_price
+
+            if is_offline_pay_later:
+                # In-Person where patient pays cash/card directly at the clinic to nutritionist
+                payment_status = "UNPAID"
+                payout_status = "NOT_APPLICABLE"
+                payout_amount = 0.00
+            else:
+                # All platform payments (virtual consultations, or clinic visits requiring online payment)
+                # Revenue is collected by platform, so Admin owes payout to the nutritionist
+                payment_status = "PAID"
+                payout_status = "PENDING"
+                payout_amount = real_price
+
+            # ✅ CREATE APPOINTMENT WITH LINK & SNAPSHOTS
             appointment = Appointment.objects.create(
                 patient=user,
                 nutritionist=nutritionist,
                 selected_expert=selected_expert,
                 slot=slot,
+                slot_date=slot.date,
+                slot_start_time=slot.start_time,
+                slot_end_time=slot.end_time,
                 appointment_category=category,
                 appointment_type=appointment_type,
                 assigned_by=assigned_by,
-                meeting_link=meeting_link
+                meeting_link=meeting_link,
+                fee_amount=fee_amount,
+                payment_status=payment_status,
+                payout_status=payout_status,
+                payout_amount=payout_amount,
             )
 
             if consumed_quota:
@@ -278,6 +302,13 @@ class AppointmentCreateSerializer(serializers.Serializer):
                     reminder_type="2H"
                 )
             ])
+
+            # 📧 Send booking confirmation emails asynchronously to both patient & nutritionist
+            try:
+                send_booking_confirmation_emails(appointment)
+            except Exception as e:
+                print(f"⚠️ Failed to send booking confirmation email: {e}")
+
         return appointment
 
 
@@ -385,7 +416,7 @@ class NutritionistSlotSerializer(serializers.ModelSerializer):
 
 
 class AppointmentListSerializer(serializers.ModelSerializer):
-    slot = AvailabilitySlotSerializer()
+    slot = serializers.SerializerMethodField()
     nutritionist_name = serializers.CharField(
         source="nutritionist.full_name", read_only=True
     )
@@ -407,6 +438,10 @@ class AppointmentListSerializer(serializers.ModelSerializer):
     price = serializers.SerializerMethodField()
     offline_payment_required = serializers.SerializerMethodField()
     feedbacks = FeedbackDisplaySerializer(many=True, read_only=True)
+
+    can_reschedule = serializers.SerializerMethodField()
+    reschedule_remaining = serializers.SerializerMethodField()
+    can_cancel = serializers.SerializerMethodField()
 
     class Meta:
         model = Appointment
@@ -432,7 +467,40 @@ class AppointmentListSerializer(serializers.ModelSerializer):
             "offline_payment_required",
             "slot",
             "feedbacks",
+            # Cancellation & Refund
+            "cancelled_by",
+            "cancelled_at",
+            "cancellation_reason",
+            "payment_status",
+            "fee_amount",
+            "refund_amount",
+            "refund_notes",
+            "refunded_at",
+            # Rescheduling
+            "reschedule_count",
+            "rescheduled_at",
+            "can_reschedule",
+            "reschedule_remaining",
+            "can_cancel",
+            # Payout
+            "payout_status",
+            "payout_amount",
         ]
+
+    def get_slot(self, obj):
+        if obj.slot:
+            return AvailabilitySlotSerializer(obj.slot, context=self.context).data
+        if obj.slot_date and obj.slot_start_time and obj.slot_end_time:
+            return {
+                "id": None,
+                "date": obj.slot_date,
+                "start_time": obj.slot_start_time,
+                "end_time": obj.slot_end_time,
+                "slot_type": obj.appointment_type,
+                "is_booked": False,
+                "price": float(obj.fee_amount or 0),
+            }
+        return None
 
     def get_offline_location(self, obj):
         profile = getattr(obj.nutritionist, "nutritionist_profile", None)
@@ -447,6 +515,8 @@ class AppointmentListSerializer(serializers.ModelSerializer):
         return float(profile.offline_price) if profile and profile.offline_price is not None else 0.0
 
     def get_price(self, obj):
+        if obj.fee_amount and float(obj.fee_amount) > 0:
+            return float(obj.fee_amount)
         profile = getattr(obj.nutritionist, "nutritionist_profile", None)
         if not profile:
             return 0.0
@@ -458,14 +528,55 @@ class AppointmentListSerializer(serializers.ModelSerializer):
         profile = getattr(obj.nutritionist, "nutritionist_profile", None)
         return profile.offline_payment_required if profile else True
 
+    def _get_start_datetime(self, obj):
+        d = obj.slot_date or (obj.slot.date if obj.slot else None)
+        t = obj.slot_start_time or (obj.slot.start_time if obj.slot else None)
+        if not d or not t:
+            return None
+        return timezone.make_aware(datetime.combine(d, t))
+
+    def get_can_reschedule(self, obj):
+        if obj.status == "CANCELLED":
+            return False
+        appt_start = self._get_start_datetime(obj)
+        if not appt_start:
+            return False
+        now = timezone.now()
+        if now >= appt_start:
+            return False
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        # Nutritionist: unlimited, anytime before start
+        if user and user == obj.nutritionist:
+            return True
+
+        # Patient: strictly >= 24h before AND reschedule_count < 2
+        return (appt_start - now) >= timedelta(hours=24) and obj.reschedule_count < 2
+
+    def get_reschedule_remaining(self, obj):
+        return max(0, 2 - obj.reschedule_count)
+
+    def get_can_cancel(self, obj):
+        if obj.status == "CANCELLED":
+            return False
+        appt_start = self._get_start_datetime(obj)
+        if not appt_start:
+            return False
+        return timezone.now() < appt_start
+
 
 class AppointmentDetailSerializer(serializers.ModelSerializer):
-    slot = AvailabilitySlotSerializer()
+    slot = serializers.SerializerMethodField()
     patient_details = serializers.SerializerMethodField()
     nutritionist_details = serializers.SerializerMethodField()
     feedbacks = FeedbackDisplaySerializer(many=True, read_only=True)
     price = serializers.SerializerMethodField()
     offline_payment_required = serializers.SerializerMethodField()
+
+    can_reschedule = serializers.SerializerMethodField()
+    reschedule_remaining = serializers.SerializerMethodField()
+    can_cancel = serializers.SerializerMethodField()
 
     class Meta:
         model = Appointment
@@ -481,13 +592,50 @@ class AppointmentDetailSerializer(serializers.ModelSerializer):
             "created_at",
             "slot",
             "price",
+            "fee_amount",
             "offline_payment_required",
             "patient_details",
             "nutritionist_details",
             "feedbacks",
+            # Cancellation & Refund
+            "cancelled_by",
+            "cancelled_at",
+            "cancellation_reason",
+            "payment_status",
+            "refund_amount",
+            "refund_notes",
+            "refunded_at",
+            # Rescheduling
+            "reschedule_count",
+            "rescheduled_at",
+            "can_reschedule",
+            "reschedule_remaining",
+            "can_cancel",
+            # Payout
+            "payout_status",
+            "payout_amount",
+            "payout_marked_at",
+            "payout_transaction_ref",
         ]
 
+    def get_slot(self, obj):
+        if obj.slot:
+            return AvailabilitySlotSerializer(obj.slot, context=self.context).data
+        if obj.slot_date and obj.slot_start_time and obj.slot_end_time:
+            return {
+                "id": None,
+                "date": obj.slot_date,
+                "start_time": obj.slot_start_time,
+                "end_time": obj.slot_end_time,
+                "slot_type": obj.appointment_type,
+                "is_booked": False,
+                "price": float(obj.fee_amount or 0),
+            }
+        return None
+
     def get_price(self, obj):
+        if obj.fee_amount and float(obj.fee_amount) > 0:
+            return float(obj.fee_amount)
         profile = getattr(obj.nutritionist, "nutritionist_profile", None)
         if not profile:
             return 0.0
@@ -498,6 +646,40 @@ class AppointmentDetailSerializer(serializers.ModelSerializer):
     def get_offline_payment_required(self, obj):
         profile = getattr(obj.nutritionist, "nutritionist_profile", None)
         return profile.offline_payment_required if profile else True
+
+    def _get_start_datetime(self, obj):
+        d = obj.slot_date or (obj.slot.date if obj.slot else None)
+        t = obj.slot_start_time or (obj.slot.start_time if obj.slot else None)
+        if not d or not t:
+            return None
+        return timezone.make_aware(datetime.combine(d, t))
+
+    def get_can_reschedule(self, obj):
+        if obj.status == "CANCELLED":
+            return False
+        appt_start = self._get_start_datetime(obj)
+        if not appt_start:
+            return False
+        now = timezone.now()
+        if now >= appt_start:
+            return False
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user and user == obj.nutritionist:
+            return True
+        return (appt_start - now) >= timedelta(hours=24) and obj.reschedule_count < 2
+
+    def get_reschedule_remaining(self, obj):
+        return max(0, 2 - obj.reschedule_count)
+
+    def get_can_cancel(self, obj):
+        if obj.status == "CANCELLED":
+            return False
+        appt_start = self._get_start_datetime(obj)
+        if not appt_start:
+            return False
+        return timezone.now() < appt_start
 
     def get_patient_details(self, obj):
         p = obj.patient
@@ -528,6 +710,72 @@ class AppointmentDetailSerializer(serializers.ModelSerializer):
             "online_price": float(profile.online_price) if profile and profile.online_price is not None else 0.0,
             "offline_price": float(profile.offline_price) if profile and profile.offline_price is not None else 0.0,
         }
+
+
+# ---------- Nutritionist Online Earnings & Payout Serializer ----------
+class NutritionistPayoutSerializer(serializers.ModelSerializer):
+    patient_name = serializers.CharField(source="patient.full_name", read_only=True)
+    patient_email = serializers.CharField(source="patient.email", read_only=True)
+    session_date = serializers.SerializerMethodField()
+    session_time = serializers.SerializerMethodField()
+    fee_amount = serializers.SerializerMethodField()
+    payout_amount = serializers.SerializerMethodField()
+    payout_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Appointment
+        fields = [
+            "id",
+            "patient_name",
+            "patient_email",
+            "appointment_type",
+            "session_date",
+            "session_time",
+            "fee_amount",
+            "payout_amount",
+            "payment_status",
+            "payout_status",
+            "payout_marked_at",
+            "payout_transaction_ref",
+            "status",
+            "created_at",
+        ]
+
+    def get_session_date(self, obj):
+        if obj.slot_date:
+            return obj.slot_date
+        return obj.slot.date if obj.slot else None
+
+    def get_session_time(self, obj):
+        start = obj.slot_start_time or (obj.slot.start_time if obj.slot else None)
+        end = obj.slot_end_time or (obj.slot.end_time if obj.slot else None)
+        if start and end:
+            return f"{start.strftime('%H:%M')} - {end.strftime('%H:%M')}"
+        return "—"
+
+    def get_fee_amount(self, obj):
+        if obj.fee_amount and float(obj.fee_amount) > 0:
+            return float(obj.fee_amount)
+        profile = getattr(obj.nutritionist, "nutritionist_profile", None)
+        if profile:
+            price = profile.offline_price if obj.appointment_type == "IN_PERSON" else profile.online_price
+            if price and float(price) > 0:
+                return float(price)
+        return 0.0
+
+    def get_payout_amount(self, obj):
+        if obj.payout_amount and float(obj.payout_amount) > 0:
+            return float(obj.payout_amount)
+        if obj.appointment_type == "VIRTUAL":
+            return self.get_fee_amount(obj)
+        return 0.0
+
+    def get_payout_status(self, obj):
+        if obj.payout_status and obj.payout_status not in ["NOT_APPLICABLE", ""]:
+            return obj.payout_status
+        if obj.appointment_type == "VIRTUAL":
+            return "PENDING"
+        return obj.payout_status or "NOT_APPLICABLE"
 
 
 class AppointmentNotesUpdateSerializer(serializers.ModelSerializer):

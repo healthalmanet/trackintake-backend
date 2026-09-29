@@ -159,8 +159,13 @@ def send_message_notification(sender_or_message, receiver=None, text=None):
 
     # 2. Asynchronous Resend Email Dispatch (Non-blocking via Resend API)
     if receiver and receiver.email:
-        email_text = f"Hello {receiver.full_name or receiver.email},\n\n{text}\n\nBest regards,\nTrackIntake Team"
-        email_subject = f"📩 New message from {sender.full_name or sender.email}" if sender else "TrackIntake Notification"
+        sender_display = sender.full_name or sender.email if sender else "Your Healthcare Partner"
+        receiver_display = receiver.full_name or receiver.email
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://trackintake.co.in')
+        chat_url = f"{frontend_url}/nutritionist/chat" if getattr(receiver, 'role', None) == 'nutritionist' else f"{frontend_url}/chat"
+
+        email_text = f"Hello {receiver_display},\n\nYou have received a new message from {sender_display}:\n\n\"{text}\"\n\nReply directly in TrackIntake: {chat_url}\n\nBest regards,\nTrackIntake Team"
+        email_subject = f"💬 New message from {sender_display}" if sender else "TrackIntake Message Notification"
         text_upper = (text or "").upper()
         if "VERIFIED" in text_upper:
             email_subject = "🎉 TrackIntake - Your Practitioner Account is Officially Verified!"
@@ -170,11 +175,22 @@ def send_message_notification(sender_or_message, receiver=None, text=None):
             email_subject = "⚠️ TrackIntake - Update Regarding Your Practitioner Account"
 
         html_body = f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 8px;">
-            <h3 style="color: #2e7d32;">TrackIntake Notification</h3>
-            <p>Hello <strong>{receiver.full_name or receiver.email}</strong>,</p>
-            <p style="background-color: #f9f9f9; padding: 12px; border-left: 4px solid #2e7d32; border-radius: 4px;">{text}</p>
-            <p style="margin-top: 20px; font-size: 12px; color: #888;">TrackIntake Team</p>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+            <div style="border-bottom: 2px solid #2e7d32; padding-bottom: 12px; margin-bottom: 20px;">
+                <h3 style="color: #2e7d32; margin: 0; font-size: 18px;">💬 TrackIntake Direct Message</h3>
+            </div>
+            <p style="font-size: 15px; color: #334155;">Hello <strong>{receiver_display}</strong>,</p>
+            <p style="font-size: 14px; color: #475569;">You have received a new message from <strong>{sender_display}</strong>:</p>
+            <div style="background-color: #f8fafc; border-left: 4px solid #2e7d32; border-radius: 6px; padding: 16px; margin: 16px 0; font-size: 14px; line-height: 1.6; color: #1e293b;">
+                {text}
+            </div>
+            <div style="margin: 24px 0 16px 0;">
+                <a href="{chat_url}" target="_blank" style="background-color: #2e7d32; color: #ffffff; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 13px; display: inline-block;">
+                    Open Chat & Reply →
+                </a>
+            </div>
+            <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 24px 0;">
+            <p style="font-size: 12px; color: #94a3b8; margin: 0;">TrackIntake Secure Messaging • <a href="{frontend_url}" style="color: #2e7d32; text-decoration: none;">trackintake.co.in</a></p>
         </div>
         """
         send_resend_email_async(
