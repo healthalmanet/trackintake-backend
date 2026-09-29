@@ -284,20 +284,23 @@ from .serializers import (
     AppointmentNotesUpdateSerializer,
     NutritionistSlotSerializer,
     AppointmentFeedbackSerializer,
+    NutritionistPayoutSerializer,
 )
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
-from datetime import datetime
+from datetime import datetime, timedelta
 from nutritionist.models import PatientAssignment
 from user.models import User
 from nutritionist.models import NutritionistProfile
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Sum, Count
 from django.utils.dateparse import parse_date
 from django.utils.timezone import localdate
+from appointments.zoom_service import create_zoom_meeting
+from .email_utils import send_cancellation_emails, send_reschedule_emails
 
 
 # ─────────────────────────────────────────────
@@ -561,37 +564,348 @@ class NutritionistDeleteSlotView(DestroyAPIView):
 
 
 # ─────────────────────────────────────────────
-# CANCEL APPOINTMENT (Patient)
+# CANCEL APPOINTMENT (Patient or Nutritionist)
 # ─────────────────────────────────────────────
 class CancelAppointmentView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        appointment = get_object_or_404(
-            Appointment,
-            id=pk,
-            patient=request.user
-        )
+        appointment = get_object_or_404(Appointment, id=pk)
+        user = request.user
 
-        slot = appointment.slot
-
-        slot_start = datetime.combine(
-            slot.date,
-            slot.start_time,
-            tzinfo=timezone.get_current_timezone()
-        )
-
-        if timezone.now() >= slot_start:
+        # Permission check: must be patient, assigned nutritionist, or staff/admin
+        if user != appointment.patient and user != appointment.nutritionist and not user.is_staff:
             return Response(
-                {"detail": "Cannot cancel after appointment has started"},
+                {"detail": "You do not have permission to cancel this appointment."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if appointment.status == "CANCELLED":
+            return Response(
+                {"detail": "This appointment has already been cancelled."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        appointment.delete()
-        slot.is_booked = False
-        slot.save()
+        # Get slot timing
+        slot = appointment.slot
+        slot_date = appointment.slot_date or (slot.date if slot else None)
+        slot_start_time = appointment.slot_start_time or (slot.start_time if slot else None)
 
-        return Response({"detail": "Appointment cancelled"})
+        if slot_date and slot_start_time:
+            slot_start = timezone.make_aware(datetime.combine(slot_date, slot_start_time))
+            if timezone.now() >= slot_start:
+                return Response(
+                    {"detail": "Cannot cancel an appointment that has already started or passed."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            time_diff = slot_start - timezone.now()
+        else:
+            time_diff = timedelta(days=1)
+
+        reason = request.data.get("reason", "").strip()
+
+        with transaction.atomic():
+            # Restore slot availability so it can be booked again immediately
+            if slot:
+                slot.is_booked = False
+                slot.save(update_fields=["is_booked"])
+
+            if user == appointment.nutritionist:
+                # ✅ Cancelled by Nutritionist: Patient is 100% eligible for refund if they paid
+                appointment.cancelled_by = "NUTRITIONIST"
+                if appointment.payment_status == "PAID" and appointment.fee_amount > 0:
+                    appointment.payment_status = "PENDING_REFUND"
+                    appointment.refund_amount = appointment.fee_amount
+                    policy_msg = f"Notice: Cancelled by practitioner. Full refund of ₹{appointment.fee_amount} is marked as PENDING for the patient and will be processed by Admin."
+                else:
+                    appointment.payment_status = "NO_REFUND"
+                    policy_msg = "Notice: Cancelled by practitioner. No upfront payment was required for this booking."
+                appointment.payout_status = "CANCELLED"
+            else:
+                # ❌ Cancelled by Patient
+                appointment.cancelled_by = "PATIENT"
+                if time_diff < timedelta(hours=24):
+                    # Within 24h: Policy -> No refund
+                    appointment.payment_status = "NO_REFUND"
+                    appointment.payout_status = "CANCELLED"
+                    policy_msg = "Notice: Cancelled within 24 hours of scheduled appointment. As per platform policy, no refund applies."
+                else:
+                    # Cancelled >24h prior: Eligible for refund review by Admin
+                    if appointment.payment_status == "PAID" and appointment.fee_amount > 0:
+                        appointment.payment_status = "PENDING_REFUND"
+                        appointment.refund_amount = appointment.fee_amount
+                        policy_msg = f"Notice: Cancelled more than 24 hours prior. Refund of ₹{appointment.fee_amount} is marked as PENDING and will be processed by Admin."
+                    else:
+                        appointment.payment_status = "NO_REFUND"
+                        policy_msg = "Notice: Cancelled more than 24 hours prior. No upfront payment was required for this booking."
+                    appointment.payout_status = "CANCELLED"
+
+            appointment.status = "CANCELLED"
+            appointment.cancelled_at = timezone.now()
+            appointment.cancellation_reason = reason
+            appointment.save()
+
+        # Send cancellation emails asynchronously to both patient and nutritionist
+        try:
+            send_cancellation_emails(appointment, appointment.cancelled_by, reason)
+        except Exception as e:
+            print(f"⚠️ Failed to send cancellation email: {e}")
+
+        return Response({
+            "detail": "Appointment cancelled successfully. The time slot is now available again.",
+            "policy_notice": policy_msg,
+            "appointment": AppointmentDetailSerializer(appointment, context={"request": request}).data,
+        }, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────
+# RESCHEDULE APPOINTMENT (Patient or Nutritionist)
+# ─────────────────────────────────────────────
+class RescheduleAppointmentView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        appointment = get_object_or_404(Appointment, id=pk)
+        user = request.user
+
+        if user != appointment.patient and user != appointment.nutritionist and not user.is_staff:
+            return Response(
+                {"detail": "You do not have permission to reschedule this appointment."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if appointment.status == "CANCELLED":
+            return Response(
+                {"detail": "Cannot reschedule a cancelled appointment. Please book a new slot."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        new_slot_id = request.data.get("new_slot_id") or request.data.get("slot_id")
+        if not new_slot_id:
+            return Response(
+                {"detail": "Please select a new availability slot."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Current appointment timing
+        slot = appointment.slot
+        slot_date = appointment.slot_date or (slot.date if slot else None)
+        slot_start_time = appointment.slot_start_time or (slot.start_time if slot else None)
+        if slot_date and slot_start_time:
+            current_start = timezone.make_aware(datetime.combine(slot_date, slot_start_time))
+            if timezone.now() >= current_start:
+                return Response(
+                    {"detail": "Cannot reschedule an appointment that has already started or passed."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            time_diff = current_start - timezone.now()
+        else:
+            time_diff = timedelta(days=2)
+
+        # Patient Rules:
+        # 1. strictly before 24 hours
+        # 2. limited to 2 times only
+        is_patient = (user == appointment.patient)
+        if is_patient:
+            if time_diff < timedelta(hours=24):
+                return Response(
+                    {"detail": "Rescheduling is only available at least 24 hours before the appointment. Rescheduling is disabled within 24 hours of the appointment."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if appointment.reschedule_count >= 2:
+                return Response(
+                    {"detail": "You have already reached the maximum limit of 2 reschedules for this appointment."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # Validate new slot
+        try:
+            new_slot = AvailabilitySlot.objects.get(id=new_slot_id)
+        except AvailabilitySlot.DoesNotExist:
+            return Response({"detail": "Selected slot does not exist."}, status=status.HTTP_404_NOT_FOUND)
+
+        if new_slot.nutritionist_id != appointment.nutritionist_id:
+            return Response({"detail": "You can only reschedule with the assigned nutritionist."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if new_slot.is_booked and new_slot.id != (appointment.slot_id or 0):
+            return Response({"detail": "This slot is already booked. Please choose another future slot."}, status=status.HTTP_400_BAD_REQUEST)
+
+        new_slot_start = timezone.make_aware(datetime.combine(new_slot.date, new_slot.start_time))
+        if timezone.now() >= new_slot_start:
+            return Response({"detail": "Selected slot is in the past. Please select a future slot."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check slot type compatibility
+        if new_slot.slot_type != "BOTH" and new_slot.slot_type != appointment.appointment_type:
+            type_label = "In-Clinic" if new_slot.slot_type == "IN_PERSON" else "Virtual"
+            return Response(
+                {"detail": f"This slot is reserved for {type_label} appointments and cannot be used for {appointment.appointment_type}."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        old_slot_str = f"{slot_date} {slot_start_time.strftime('%I:%M %p')}" if slot_date and slot_start_time else "Previous Time"
+        new_slot_str = f"{new_slot.date} {new_slot.start_time.strftime('%I:%M %p')}"
+
+        with transaction.atomic():
+            new_slot = AvailabilitySlot.objects.select_for_update().get(id=new_slot_id)
+            if new_slot.is_booked and new_slot.id != (appointment.slot_id or 0):
+                return Response({"detail": "This slot was just booked by someone else. Please choose another slot."}, status=status.HTTP_400_BAD_REQUEST)
+            old_slot = appointment.slot
+            if old_slot and old_slot.id != new_slot.id:
+                old_slot.is_booked = False
+                old_slot.save(update_fields=["is_booked"])
+
+            new_slot.is_booked = True
+            new_slot.save(update_fields=["is_booked"])
+
+            # If virtual, refresh Zoom link for new datetime
+            if appointment.appointment_type == "VIRTUAL":
+                try:
+                    duration = int(
+                        (datetime.combine(new_slot.date, new_slot.end_time) -
+                         datetime.combine(new_slot.date, new_slot.start_time)).total_seconds() / 60
+                    )
+                    patient_name = appointment.patient.full_name or appointment.patient.email
+                    nutri_name = appointment.nutritionist.full_name or appointment.nutritionist.email
+                    zoom_resp = create_zoom_meeting(
+                        topic=f"Consultation: {patient_name} with {nutri_name}",
+                        start_time_str=new_slot_start.isoformat(),
+                        duration=duration
+                    )
+                    appointment.meeting_link = zoom_resp.get("join_url")
+                except Exception as e:
+                    print(f"⚠️ Zoom link refresh failed: {e}")
+
+            appointment.slot = new_slot
+            appointment.slot_date = new_slot.date
+            appointment.slot_start_time = new_slot.start_time
+            appointment.slot_end_time = new_slot.end_time
+            if is_patient:
+                appointment.reschedule_count += 1
+            appointment.rescheduled_at = timezone.now()
+            appointment.status = "CONFIRMED"
+            appointment.save()
+
+            # Refresh reminders for new time
+            from .models import AppointmentReminder
+            AppointmentReminder.objects.filter(appointment=appointment).delete()
+            AppointmentReminder.objects.bulk_create([
+                AppointmentReminder(
+                    appointment=appointment,
+                    remind_at=new_slot_start - timedelta(hours=24),
+                    reminder_type="24H"
+                ),
+                AppointmentReminder(
+                    appointment=appointment,
+                    remind_at=new_slot_start - timedelta(hours=2),
+                    reminder_type="2H"
+                )
+            ])
+
+        # Send reschedule emails to both parties
+        try:
+            send_reschedule_emails(
+                appointment=appointment,
+                rescheduled_by_role="PATIENT" if is_patient else "NUTRITIONIST",
+                old_slot_str=old_slot_str,
+                new_slot_str=new_slot_str
+            )
+        except Exception as e:
+            print(f"⚠️ Failed to send reschedule email: {e}")
+
+        return Response({
+            "detail": f"Appointment successfully rescheduled to {new_slot_str}.",
+            "reschedules_used": appointment.reschedule_count,
+            "reschedules_remaining": max(0, 2 - appointment.reschedule_count),
+            "appointment": AppointmentDetailSerializer(appointment, context={"request": request}).data,
+        }, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────
+# NUTRITIONIST ONLINE EARNINGS & PAYOUTS
+# ─────────────────────────────────────────────
+class NutritionistPayoutsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.role != "nutritionist" and not user.is_staff:
+            return Response({"detail": "Only nutritionists can access earnings and payouts."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Auto-sync/backfill any appointments with missing financial calculations from profile
+        profile = getattr(user, "nutritionist_profile", None)
+        if profile:
+            online_price = float(profile.online_price or 0.0)
+            offline_price = float(profile.offline_price or 0.0)
+            if online_price > 0 or offline_price > 0:
+                uncalculated = Appointment.objects.filter(
+                    nutritionist=user
+                ).filter(
+                    Q(fee_amount__lte=0) | Q(payout_amount__lte=0, appointment_type="VIRTUAL")
+                )
+                for appt in uncalculated:
+                    price = online_price if appt.appointment_type == "VIRTUAL" else offline_price
+                    if price > 0:
+                        appt.fee_amount = price
+                        if appt.appointment_type == "VIRTUAL" or profile.offline_payment_required:
+                            if appt.payment_status in ["UNPAID", ""]:
+                                appt.payment_status = "PAID"
+                            if appt.payout_status in ["NOT_APPLICABLE", ""]:
+                                appt.payout_status = "PENDING"
+                            appt.payout_amount = price
+                        appt.save(update_fields=["fee_amount", "payment_status", "payout_status", "payout_amount"])
+
+        # All online booking appointments where revenue was handled by platform
+        qs = Appointment.objects.filter(
+            nutritionist=user
+        ).filter(
+            Q(appointment_type="VIRTUAL") | Q(fee_amount__gt=0)
+        ).select_related(
+            "patient", "slot"
+        ).order_by("-created_at")
+
+        search = request.query_params.get("search")
+        if search:
+            qs = qs.filter(
+                Q(patient__full_name__icontains=search) |
+                Q(patient__email__icontains=search) |
+                Q(id__icontains=search)
+            )
+
+        payout_status = request.query_params.get("payout_status")
+        if payout_status and payout_status != "ALL":
+            qs = qs.filter(payout_status=payout_status)
+
+        # Financial summary aggregation
+        all_nutri_appts = Appointment.objects.filter(
+            nutritionist=user
+        ).filter(
+            Q(appointment_type="VIRTUAL") | Q(fee_amount__gt=0)
+        )
+
+        total_earned = all_nutri_appts.filter(
+            payout_status__in=["PAID", "PENDING"]
+        ).aggregate(total=Sum("payout_amount"))["total"] or 0.0
+
+        pending_payout = all_nutri_appts.filter(
+            payout_status="PENDING"
+        ).aggregate(total=Sum("payout_amount"))["total"] or 0.0
+
+        completed_payout = all_nutri_appts.filter(
+            payout_status="PAID"
+        ).aggregate(total=Sum("payout_amount"))["total"] or 0.0
+
+        total_bookings = all_nutri_appts.count()
+
+        serializer = NutritionistPayoutSerializer(qs, many=True)
+        return Response({
+            "summary": {
+                "total_earned": float(total_earned),
+                "pending_payout": float(pending_payout),
+                "completed_payout": float(completed_payout),
+                "total_bookings": total_bookings,
+            },
+            "payouts": serializer.data,
+        })
 
 
 # ─────────────────────────────────────────────
@@ -650,23 +964,23 @@ class NutritionistMySlotsView(APIView):
         qs = (
             base_qs
             .select_related(
-                "appointment",
-                "appointment__patient",
                 "nutritionist",
                 "nutritionist__nutritionist_profile",
             )
             .prefetch_related(
-                "appointment__feedbacks",
-                "appointment__feedbacks__given_by",
+                "appointments",
+                "appointments__patient",
+                "appointments__feedbacks",
+                "appointments__feedbacks__given_by",
             )
         )
 
         # 🔍 Search by patient name or email
         if search:
             qs = qs.filter(
-                Q(appointment__patient__full_name__icontains=search) |
-                Q(appointment__patient__email__icontains=search)
-            )
+                Q(appointments__patient__full_name__icontains=search) |
+                Q(appointments__patient__email__icontains=search)
+            ).distinct()
 
         # 📅 Filter by date
         if date:
