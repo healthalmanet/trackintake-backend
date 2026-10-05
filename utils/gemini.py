@@ -1,7 +1,9 @@
 import dotenv
 from userFood.models import FoodItem, FoodType, MealType, Allergen, LEVEL_CHOICES, normalize_food_name, display_food_name
 from google import genai
+from google.genai import types
 from django.db import transaction
+from django.utils import timezone
 import json
 import traceback
 import time
@@ -642,3 +644,274 @@ Each object must use these exact keys:
     except Exception as exc:
         logger.warning(f"suggest_foods_gemini error: {exc}")
         return []
+
+
+def analyze_meal_photo_gemini(image_bytes: bytes, mime_type: str = "image/jpeg", user_context: dict = None) -> dict:
+    """
+    Analyzes a meal or food photo using Gemini 2.5 Flash multimodal vision.
+    - Handles full Indian thalis, platters, or individual items by detecting each distinct dish separately.
+    - Extracts all columns corresponding to the FoodItem database table.
+    - Persists unrecognized items directly into the FoodItem table (with M2M tags).
+    - Returns structured data in both display review and auto-fill log_meal format.
+    """
+    if not image_bytes:
+        raise ValueError("No image bytes provided for analysis.")
+
+    prompt = """
+You are an expert clinical dietitian and computer vision food analyst for the TrackIntake health platform.
+Analyze the meal/food photo provided with extreme precision.
+
+CRITICAL INSTRUCTIONS:
+1. Platter / Thali Management:
+   - If the image contains a full thali, combo meal, buffet plate, or multiple items (e.g. 2 Roti, Dal, Sabzi, Rice, Salad, Curd/Raita, Sweet), you MUST detect and separate EACH DISTINCT FOOD COMPONENT as its own individual item in the "items" array!
+   - Indicate whether the meal is a composite thali/platter in "is_thali" (true/false).
+2. For EACH detected item, provide detailed nutritional attributes corresponding exactly to clinical food catalog specifications:
+   - food_name: Clean, standardized dish name (e.g. "Whole Wheat Roti", "Dal Tadka", "Paneer Butter Masala", "Jeera Rice", "Kachumber Salad").
+   - quantity: Estimated count or portion amount visible on the plate (e.g., 2 for two rotis, 1 for one katori dal).
+   - unit: Best fit standard unit from:
+     ["Gram", "Kilogram", "Milliliter", "Small Bowl", "Bowl", "Big Bowl", "Small Plate", "Plate", "Big Plate", "Small Glass", "Glass", "Large Glass", "Small Cup", "Cup", "Small Piece", "Piece", "Large Piece", "Slice", "Tbsp", "Tsp", "Katori", "Vati", "Karchi", "Muthhi", "Handful", "Thali"]
+   - portion_size: "Small", "Medium", or "Large".
+   - gram_equivalent: Total estimated weight of this item in grams.
+   - Core Macros: calories (kcal), protein (g), carbs (g), fats (g), sugar (g), fiber (g).
+   - Fat Profile: saturated_fat_g (g), trans_fat_g (g).
+   - Glycemic Data: estimated_gi (1-100), glycemic_load.
+   - Minerals: sodium_mg, potassium_mg, iron_mg, calcium_mg, iodine_mcg, zinc_mg, magnesium_mg, selenium_mcg.
+   - Vitamins & Lipids: cholesterol_mg, omega_3_g, vitamin_d_mcg, vitamin_b12_mcg.
+   - Levels: fodmap_level ("Low"|"Medium"|"High"), spice_level ("Low"|"Medium"|"High"), purine_level ("Low"|"Medium"|"High").
+   - Classifications:
+     food_types: Array (e.g. ["Vegetarian", "Vegan", "Non-Vegetarian", or "Egg"]).
+     meal_types: Array (e.g. ["Breakfast", "Lunch", "Dinner", "Snack"]).
+     allergens: Array (e.g. ["Gluten", "Dairy", "Nuts", "Soy", or empty if none).
+   - description: 1-sentence observation of this item.
+   - confidence: Detection confidence between 0.0 and 1.0.
+3. suggested_meal_type: Best guess for the meal slot ("Breakfast", "Lunch", "Dinner", or "Snack").
+4. overall_description: 1-2 friendly sentences describing the whole meal/plate.
+
+Return ONLY a valid JSON object matching this schema:
+{
+  "is_thali": <true|false>,
+  "overall_description": "<string>",
+  "suggested_meal_type": "<Breakfast|Lunch|Dinner|Snack>",
+  "items": [
+    {
+      "food_name": "<string>",
+      "quantity": <float>,
+      "unit": "<string>",
+      "portion_size": "<Small|Medium|Large>",
+      "gram_equivalent": <float>,
+      "calories": <float>,
+      "protein": <float>,
+      "carbs": <float>,
+      "fats": <float>,
+      "sugar": <float>,
+      "fiber": <float>,
+      "saturated_fat_g": <float>,
+      "trans_fat_g": <float>,
+      "estimated_gi": <float>,
+      "glycemic_load": <float>,
+      "sodium_mg": <float>,
+      "potassium_mg": <float>,
+      "iron_mg": <float>,
+      "calcium_mg": <float>,
+      "iodine_mcg": <float>,
+      "zinc_mg": <float>,
+      "magnesium_mg": <float>,
+      "selenium_mcg": <float>,
+      "cholesterol_mg": <float>,
+      "omega_3_g": <float>,
+      "vitamin_d_mcg": <float>,
+      "vitamin_b12_mcg": <float>,
+      "fodmap_level": "<Low|Medium|High>",
+      "spice_level": "<Low|Medium|High>",
+      "purine_level": "<Low|Medium|High>",
+      "food_types": ["<string>"],
+      "meal_types": ["<string>"],
+      "allergens": ["<string>"],
+      "confidence": <float>,
+      "description": "<string>"
+    }
+  ]
+}
+"""
+
+    try:
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg")
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[image_part, prompt],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="application/json"
+            )
+        )
+
+        raw_text = response.text.strip()
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:]
+        data = json.loads(raw_text.strip())
+
+        items = data.get("items", [])
+        is_thali = bool(data.get("is_thali", False))
+        suggested_meal_type = data.get("suggested_meal_type", "Lunch")
+        enriched_items = []
+        log_meal_format = []
+
+        total_cals = 0.0
+        total_protein = 0.0
+        total_carbs = 0.0
+        total_fats = 0.0
+        total_fiber = 0.0
+
+        today_str = timezone.now().strftime("%Y-%m-%d")
+        now_iso = timezone.now().isoformat()
+
+        def safe_float(val, fallback=0.0):
+            if val is None:
+                return fallback
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return fallback
+
+        for item in items:
+            raw_name = (item.get("food_name") or "").strip()
+            if not raw_name:
+                continue
+
+            clean_name = display_food_name(raw_name)
+            key = normalize_food_name(clean_name)
+
+            qty = safe_float(item.get("quantity"), 1.0)
+            unit = item.get("unit") or "Piece"
+            portion_size = item.get("portion_size") or "Medium"
+            gram_eq = safe_float(item.get("gram_equivalent"), 100.0)
+
+            cals = safe_float(item.get("calories"))
+            prot = safe_float(item.get("protein"))
+            carb = safe_float(item.get("carbs"))
+            fat = safe_float(item.get("fats"))
+            fib = safe_float(item.get("fiber"))
+            sug = safe_float(item.get("sugar"))
+
+            total_cals += cals
+            total_protein += prot
+            total_carbs += carb
+            total_fats += fat
+            total_fiber += fib
+
+            # Check if this food item exists in the FoodItem database
+            db_food = FoodItem.objects.filter(name__iexact=clean_name).first()
+            if not db_food:
+                db_food = FoodItem.objects.filter(name__iexact=key).first()
+
+            if not db_food:
+                # Save into FoodItem table with all columns
+                try:
+                    db_food = FoodItem.objects.create(
+                        name=clean_name,
+                        default_quantity=qty,
+                        default_unit=unit,
+                        gram_equivalent=gram_eq,
+                        calories=cals,
+                        protein=prot,
+                        carbs=carb,
+                        fats=fat,
+                        sugar=sug,
+                        fiber=fib,
+                        saturated_fat_g=safe_float(item.get("saturated_fat_g")),
+                        trans_fat_g=safe_float(item.get("trans_fat_g")),
+                        estimated_gi=safe_float(item.get("estimated_gi")),
+                        glycemic_load=safe_float(item.get("glycemic_load")),
+                        sodium_mg=safe_float(item.get("sodium_mg")),
+                        potassium_mg=safe_float(item.get("potassium_mg")),
+                        iron_mg=safe_float(item.get("iron_mg")),
+                        calcium_mg=safe_float(item.get("calcium_mg")),
+                        iodine_mcg=safe_float(item.get("iodine_mcg")),
+                        zinc_mg=safe_float(item.get("zinc_mg")),
+                        magnesium_mg=safe_float(item.get("magnesium_mg")),
+                        selenium_mcg=safe_float(item.get("selenium_mcg")),
+                        cholesterol_mg=safe_float(item.get("cholesterol_mg")),
+                        omega_3_g=safe_float(item.get("omega_3_g")),
+                        vitamin_d_mcg=safe_float(item.get("vitamin_d_mcg")),
+                        vitamin_b12_mcg=safe_float(item.get("vitamin_b12_mcg")),
+                        fodmap_level=(item.get("fodmap_level") or "Low").title(),
+                        spice_level=(item.get("spice_level") or "Low").title(),
+                        purine_level=(item.get("purine_level") or "Low").title(),
+                        is_verified=False,
+                    )
+                    # Many to Many relations
+                    ft_objs = [FoodType.objects.get_or_create(name=n.strip())[0]
+                               for n in item.get("food_types", []) if n.strip()]
+                    mt_objs = [MealType.objects.get_or_create(name=n.strip())[0]
+                               for n in item.get("meal_types", []) if n.strip()]
+                    al_objs = [Allergen.objects.get_or_create(name=n.strip())[0]
+                               for n in item.get("allergens", []) if n.strip().lower() not in ("none", "")]
+
+                    if ft_objs:
+                        db_food.food_types.set(ft_objs)
+                    if mt_objs:
+                        db_food.meal_types.set(mt_objs)
+                    if al_objs:
+                        db_food.allergens.set(al_objs)
+
+                    logger.info("Inserted new FoodItem '%s' (id=%s) from photo capture.", db_food.name, db_food.id)
+                except Exception as db_err:
+                    logger.warning("Could not persist FoodItem '%s': %s", clean_name, db_err)
+
+            enriched_items.append({
+                "food_item_id": db_food.id if db_food else None,
+                "food_name": db_food.name if db_food else clean_name,
+                "quantity": qty,
+                "unit": unit,
+                "portion_size": portion_size,
+                "gram_equivalent": round(gram_eq, 1),
+                "calories": round(cals, 1),
+                "protein": round(prot, 1),
+                "carbs": round(carb, 1),
+                "fats": round(fat, 1),
+                "fiber": round(fib, 1),
+                "sugar": round(sug, 1),
+                "food_type": item.get("food_type") or "Vegetarian",
+                "confidence": round(safe_float(item.get("confidence"), 0.9), 2),
+                "description": item.get("description") or "",
+                "is_thali_component": is_thali,
+            })
+
+            # Auto-fill ready format for logging meal
+            log_meal_format.append({
+                "food_name": db_food.name if db_food else clean_name,
+                "quantity": qty,
+                "unit": unit,
+                "portion_size": portion_size,
+                "meal_type": suggested_meal_type,
+                "remarks": item.get("description") or f"Logged via photo: {clean_name}",
+                "date": today_str,
+                "consumed_at": now_iso,
+                "calories": round(cals, 1),
+                "protein": round(prot, 1),
+                "carbs": round(carb, 1),
+                "fats": round(fat, 1),
+            })
+
+        return {
+            "success": True,
+            "is_thali": is_thali,
+            "overall_description": data.get("overall_description", "Meal analysis complete."),
+            "suggested_meal_type": suggested_meal_type,
+            "items": enriched_items,
+            "log_meal_format": log_meal_format,
+            "totals": {
+                "calories": round(total_cals, 1),
+                "protein": round(total_protein, 1),
+                "carbs": round(total_carbs, 1),
+                "fats": round(total_fats, 1),
+                "fiber": round(total_fiber, 1),
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error in analyze_meal_photo_gemini: {e}", exc_info=True)
+        raise
+
+

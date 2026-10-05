@@ -11,7 +11,7 @@ from userFood.views_attributes import (
 )
 
 from rest_framework.routers import DefaultRouter
-from .views import FoodSuggestionView
+from .views import FoodSuggestionView, ScanMealPhotoView
 from .urls_autocomplete import urlpatterns as autocomplete_urlpatterns
 
 # Autocomplete/search endpoints (DB-first; no Gemini during typing)
@@ -49,5 +49,8 @@ urlpatterns = [
 
     # Food suggestions
     path("suggest-foods/", FoodSuggestionView.as_view(), name="suggest-foods"),
+
+    # Scan meal photo with Gemini 2.5 Flash
+    path("scan-meal-photo/", ScanMealPhotoView.as_view(), name="scan-meal-photo"),
 ]
 urlpatterns += autocomplete_urlpatterns

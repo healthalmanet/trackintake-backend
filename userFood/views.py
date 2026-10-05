@@ -5,7 +5,8 @@ from userProfile.models import UserProfile
 from .models import UserMeal, FoodItem, Allergen, FoodType, MealType, normalize_food_name, display_food_name
 from .serializers import UserMealSerializer, UserMealWithAttributesSerializer
 from utils.utils import get_target_nutrients, send_email_notification_CALORIE, send_sms_notification
-from utils.gemini import fetch_nutrition_from_gemini, GeminiUnavailableError
+import base64
+from utils.gemini import fetch_nutrition_from_gemini, GeminiUnavailableError, analyze_meal_photo_gemini
 from utils.pagination import StandardResultsSetPagination
 from django.db.models import Q
 from django.utils.timezone import make_aware
@@ -802,6 +803,94 @@ class FoodSuggestionView(APIView):
                 "email_queued": email_q,
             },
         })
+
+
+class ScanMealPhotoView(APIView):
+    """
+    POST /api/userFood/scan-meal-photo/
+
+    Scans a food or meal image using Gemini 2.5 Flash multimodal vision.
+    Accepts:
+      - Multipart/form-data with file field 'image'
+      - JSON body with 'image_base64' (data URL or raw base64 string)
+    Returns:
+      {
+        "success": True,
+        "overall_description": "...",
+        "suggested_meal_type": "...",
+        "items": [
+           {
+             "food_name": "...",
+             "quantity": 1.0,
+             "unit": "Piece",
+             "portion_size": "Medium",
+             "gram_equivalent": 80.0,
+             "calories": 120.0,
+             "protein": 3.0,
+             "carbs": 22.0,
+             "fats": 1.5,
+             "fiber": 2.0,
+             "sugar": 0.5,
+             "food_type": "Vegetarian",
+             "confidence": 0.95,
+             "description": "...",
+             "matched_db_id": 123
+           }
+        ],
+        "totals": { "calories": 450, "protein": 18, ... }
+      }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        image_bytes = None
+        mime_type = "image/jpeg"
+
+        # 1. Check if image file was uploaded via multipart/form-data
+        if "image" in request.FILES:
+            uploaded_file = request.FILES["image"]
+            if uploaded_file.size > 15 * 1024 * 1024:
+                return Response({"error": "Image file too large (max 15MB)."}, status=status.HTTP_400_BAD_REQUEST)
+            image_bytes = uploaded_file.read()
+            mime_type = uploaded_file.content_type or "image/jpeg"
+
+        # 2. Check if image was sent as base64 string
+        elif "image_base64" in request.data:
+            b64_str = request.data["image_base64"]
+            if not b64_str or not isinstance(b64_str, str):
+                return Response({"error": "Invalid base64 image data provided."}, status=status.HTTP_400_BAD_REQUEST)
+            if "," in b64_str:
+                header, b64_data = b64_str.split(",", 1)
+                if "image/png" in header:
+                    mime_type = "image/png"
+                elif "image/webp" in header:
+                    mime_type = "image/webp"
+                elif "image/heic" in header:
+                    mime_type = "image/heic"
+                else:
+                    mime_type = "image/jpeg"
+            else:
+                b64_data = b64_str
+            try:
+                image_bytes = base64.b64decode(b64_data)
+            except Exception as e:
+                return Response({"error": f"Invalid base64 image data: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not image_bytes:
+            return Response(
+                {"error": "Please provide an image file ('image') or base64 data ('image_base64')."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            result = analyze_meal_photo_gemini(image_bytes=image_bytes, mime_type=mime_type)
+            return Response(result, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"ScanMealPhotoView error: {e}", exc_info=True)
+            return Response(
+                {"error": f"Failed to analyze meal photo: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 def _send_daily_suggestion_email(user, result, send_resend_email):
