@@ -54,20 +54,15 @@
 #             return None
 
 
-from asgiref.sync import async_to_sync
-from channels.db import database_sync_to_async
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
 
 class FinalJWTAuthentication(JWTAuthentication):
     """
-    Unified JWT authenticator for Django + DRF + Channels (ASGI-safe).
-
-    ✔ Works for sync views
-    ✔ Works for async views
-    ✔ Correctly raises auth errors
-    ✔ Never leaks anonymous access
+    Unified JWT authenticator for Django + DRF.
+    Runs direct synchronous DB lookup without nesting async_to_sync / database_sync_to_async,
+    completely preventing ASGI worker thread cancellation deadlocks when clients abort/disconnect.
     """
 
     def authenticate(self, request):
@@ -94,12 +89,11 @@ class FinalJWTAuthentication(JWTAuthentication):
 
     def get_user_safely(self, validated_token):
         """
-        Async-safe wrapper around SimpleJWT's get_user()
+        Directly fetches user for validated token.
+        Avoids wrapping with async_to_sync, eliminating threadpool deadlocks on ASGI disconnects.
         """
-        get_user_async = database_sync_to_async(super().get_user)
-
         try:
-            return async_to_sync(get_user_async)(validated_token)
+            return super().get_user(validated_token)
         except AuthenticationFailed:
             # Token valid but user invalid → MUST propagate
             raise
