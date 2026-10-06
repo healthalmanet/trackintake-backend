@@ -306,9 +306,8 @@ def get_nullable_float2(data_dict: dict, key: str) -> float | None:
 
 
 @transaction.atomic
-def food_search_gemini(food_query: str) -> FoodItem:
+def food_search_gemini(food_query: str) -> FoodItem | None:
     """
-    (FINAL CORRECTED VERSION)
     Fetches a COMPLETE nutritional profile by parsing a natural language query.
     Relies on Gemini to identify the quantity, unit, and food from the query string
     (e.g., "1 piece of roti") and calculate the nutrition for that exact serving.
@@ -318,26 +317,33 @@ def food_search_gemini(food_query: str) -> FoodItem:
 
     Returns:
         The created or updated FoodItem model instance containing the nutritional
-        data for the specified portion.
+        data for the specified portion, or None if the query is not a food item.
     """
-    if not food_query:
-        raise ValueError("Food query cannot be empty.")
+    if not food_query or not food_query.strip():
+        return None
+
+    clean_query = food_query.strip()
 
     # --- THE PROMPT IS NOW RE-ENGINEERED TO PARSE THE QUERY ---
     prompt = f"""
-Provide the most accurate and COMPLETE nutritional information for the user's query: "{food_query}".
+Provide the most accurate and COMPLETE nutritional information for the user's query: "{clean_query}".
 
-🔥 CRITICAL INSTRUCTIONS FOR ACCURACY AND PARSING:
-1) Intelligent Parsing: From the user's query ("{food_query}"), identify the quantity, unit, and food composition. The nutrition MUST correspond exactly to this parsed serving.
-2) Source Reliability: Base values ONLY on reputable databases (e.g., USDA).
-3) Preserve Name EXACTLY: In the 'name' field, keep the user’s food name as-is (you may fix capitalization only). 
+🔥 CRITICAL INSTRUCTIONS:
+1) Food Validation: If the query is NOT an edible food, ingredient, dish, beverage, or grocery item (for example, random characters like 'xyzabc123', gibberish, non-food objects), you MUST output:
+{{
+  "food_item": null,
+  "status": "not_found"
+}}
+2) Intelligent Parsing: From the user's query ("{clean_query}"), identify the quantity, unit, and food composition. The nutrition MUST correspond exactly to this parsed serving.
+3) Source Reliability: Base values ONLY on reputable databases (e.g., USDA).
+4) Preserve Name EXACTLY: In the 'name' field, keep the user’s food name as-is (you may fix capitalization only). 
    - Example: "cabbage and bajra roti and peanuts" → name = "Cabbage and Bajra Roti and Peanuts".
    - NEVER replace ingredients or reinterpret the dish (do NOT turn cabbage into peas, do NOT change “roti” to “flatbread,” etc.).
-4) Composition Handling: If the query adds components (e.g., “and peanuts”), retain the base dish and ADD the new component’s nutrients so totals reflect the full composition.
-5) Data Completeness: Provide a value for EVERY key in the JSON structure. If a reliable value cannot be found, use numeric 0. Do not omit keys.
-6) JSON Only: Output a single valid JSON object, no extra text or markdown.
+5) Composition Handling: If the query adds components (e.g., “and peanuts”), retain the base dish and ADD the new component’s nutrients so totals reflect the full composition.
+6) Data Completeness: Provide a value for EVERY key in the JSON structure. If a reliable value cannot be found, use numeric 0. Do not omit keys.
+7) JSON Only: Output a single valid JSON object, no extra text or markdown.
 
-JSON Structure (Reflecting the parsed query):
+JSON Structure (if valid food item):
 {{
   "source_url": "<URL of the data source, if available>",
   "food_item": {{
@@ -377,8 +383,7 @@ JSON Structure (Reflecting the parsed query):
 }}
 """
     try:
-        print(
-            f"🔄 Querying Gemini with natural language query: '{food_query}'...")
+        print(f"🔄 Querying Gemini with natural language query: '{clean_query}'...")
         start_time = time.time()
 
         response = client.models.generate_content(
@@ -392,33 +397,47 @@ JSON Structure (Reflecting the parsed query):
 
         elapsed_time = time.time() - start_time
         logger.warning(
-            f"⏱️ Gemini response time (nutrition): {elapsed_time:.2f}s | food='{food_query}'")
+            f"⏱️ Gemini response time (nutrition): {elapsed_time:.2f}s | food='{clean_query}'")
 
         data = json.loads(response.text)
         item_data = data.get("food_item")
-        if not item_data:
-            raise ValueError(
-                "JSON response from Gemini missing 'food_item' object.")
+
+        # If food_item is None, missing, a non-dict (e.g. string), or indicates not found
+        if not item_data or not isinstance(item_data, dict):
+            print(f"ℹ️ Gemini indicated '{clean_query}' is not a recognized food item.")
+            return None
+
+        status_text = str(data.get("status", "")).lower()
+        if "not found" in status_text or "not_found" in status_text:
+            print(f"ℹ️ Food not found status for '{clean_query}'.")
+            return None
 
         # Use the standardized name from Gemini; this is the key for our database entry.
-        standardized_name = item_data.get('name', food_query).strip()
-        if not standardized_name:  # Ensure the name is not empty
-            raise ValueError("Gemini response provided an empty food name.")
+        standardized_name = str(item_data.get('name') or clean_query).strip()
+        if not standardized_name:
+            return None
 
-        # Build the defaults dictionary. This robustly handles the parsed data from Gemini.
-        # It defaults all numeric fields to 0.0 as a final safeguard.
+        # If all nutrients are missing or N/A
+        cal_val = get_nullable_float2(item_data, 'calories')
+        prot_val = get_nullable_float2(item_data, 'protein')
+        carbs_val = get_nullable_float2(item_data, 'carbs')
+        fats_val = get_nullable_float2(item_data, 'fats')
+        if cal_val is None and prot_val is None and carbs_val is None and fats_val is None:
+            # Check if it was a non-food string
+            print(f"ℹ️ No valid numeric nutrition data returned for '{clean_query}'.")
+            return None
+
         food_item_defaults = {
             'source_url': data.get('source_url'),
-            # These values are now parsed BY Gemini
             'default_quantity': get_nullable_float2(item_data, 'default_quantity') or 1.0,
             'default_unit': item_data.get('default_unit') or 'serving',
             'gram_equivalent': get_nullable_float2(item_data, 'gram_equivalent') or 0.0,
 
             # Nutritional data
-            'calories': get_nullable_float2(item_data, 'calories') or 0.0,
-            'protein': get_nullable_float2(item_data, 'protein') or 0.0,
-            'carbs': get_nullable_float2(item_data, 'carbs') or 0.0,
-            'fats': get_nullable_float2(item_data, 'fats') or 0.0,
+            'calories': cal_val or 0.0,
+            'protein': prot_val or 0.0,
+            'carbs': carbs_val or 0.0,
+            'fats': fats_val or 0.0,
             'sugar': get_nullable_float2(item_data, 'sugar') or 0.0,
             'fiber': get_nullable_float2(item_data, 'fiber') or 0.0,
             'saturated_fat_g': get_nullable_float2(item_data, 'saturated_fat_g') or 0.0,
@@ -442,43 +461,51 @@ JSON Structure (Reflecting the parsed query):
             'fodmap_level': (item_data.get('fodmap_level') or 'Low').title(),
             'spice_level': (item_data.get('spice_level') or 'Low').title(),
             'purine_level': (item_data.get('purine_level') or 'Low').title(),
-            'is_verified': False,  # New items from AI are always unverified
+            'is_verified': False,
         }
 
-        # The `update_or_create` will find a food by its standardized name (e.g., "Roti")
-        # and update it with the nutritional data for the latest query (e.g., "2 piece roti").
-        food_item_obj, created = FoodItem.objects.update_or_create(
-            name__iexact=standardized_name,
-            defaults={'name': standardized_name, **food_item_defaults}
-        )
-        link_food_attributes(food_item_obj)
+        sid = transaction.savepoint()
+        try:
+            food_item_obj, created = FoodItem.objects.update_or_create(
+                name__iexact=standardized_name,
+                defaults={'name': standardized_name, **food_item_defaults}
+            )
 
-        log_prefix = "✅ Created" if created else "✅ Updated"
-        print(f"{log_prefix} food item '{food_item_obj.name}' with data for {food_item_obj.default_quantity} {food_item_obj.default_unit}.")
+            # Safely link food attributes
+            if _link_food_attributes:
+                try:
+                    _link_food_attributes(food_item_obj)
+                except Exception as attr_err:
+                    logger.warning(f"Attribute linking error for {food_item_obj.name}: {attr_err}")
 
-        # Handle M2M relationships (this logic remains correct)
-        food_types = [FoodType.objects.get_or_create(
-            name=name.strip())[0] for name in data.get('food_types', [])]
-        meal_types = [MealType.objects.get_or_create(
-            name=name.strip())[0] for name in data.get('meal_types', [])]
-        allergens = [Allergen.objects.get_or_create(name=name.strip())[0] for name in data.get(
-            'allergens', []) if name.lower().strip() not in ('none', '')]
+            log_prefix = "✅ Created" if created else "✅ Updated"
+            print(f"{log_prefix} food item '{food_item_obj.name}' with data for {food_item_obj.default_quantity} {food_item_obj.default_unit}.")
 
-        food_item_obj.food_types.set(food_types)
-        food_item_obj.meal_types.set(meal_types)
-        food_item_obj.allergens.set(allergens)
+            # Handle M2M relationships
+            food_types = [FoodType.objects.get_or_create(
+                name=name.strip())[0] for name in data.get('food_types', []) if name and name.strip()]
+            meal_types = [MealType.objects.get_or_create(
+                name=name.strip())[0] for name in data.get('meal_types', []) if name and name.strip()]
+            allergens = [Allergen.objects.get_or_create(name=name.strip())[0] for name in data.get(
+                'allergens', []) if name and name.lower().strip() not in ('none', '')]
 
-        return food_item_obj
+            food_item_obj.food_types.set(food_types)
+            food_item_obj.meal_types.set(meal_types)
+            food_item_obj.allergens.set(allergens)
+
+            transaction.savepoint_commit(sid)
+            return food_item_obj
+        except Exception as db_err:
+            transaction.savepoint_rollback(sid)
+            logger.error(f"Database error saving food item '{clean_query}': {db_err}")
+            return None
 
     except json.JSONDecodeError:
-        print(
-            f"❌ Gemini JSON Decode Error for '{food_query}'. Raw text:\n{response.text}")
-        raise ValueError(
-            f"Could not parse nutrition data from AI. Invalid JSON.")
+        print(f"❌ Gemini JSON Decode Error for '{clean_query}'.")
+        return None
     except Exception as e:
-        traceback.print_exc()
-        raise ValueError(
-            f"An API or database error occurred for '{food_query}': {e}")
+        logger.error(f"An error occurred in food_search_gemini for '{clean_query}': {e}")
+        return None
 
 
 # ================================================================

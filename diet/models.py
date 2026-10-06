@@ -12,6 +12,8 @@ class DietRecommendation(models.Model):
         ('pending', 'Pending Review'),
         ('approved', 'Approved'),
         ('rejected', 'Rejected'),
+        ('disabled', 'Disabled'),
+        ('archived', 'Archived'),
     ]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="diet_recommendations")

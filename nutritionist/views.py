@@ -185,7 +185,10 @@ class NutritionistCreatePatientView(generics.GenericAPIView):
                     status=201
                 )
         except Exception as e:
-            return Response({"detail": str(e), "error": str(e)}, status=400)
+            err_str = str(e)
+            if "value too long" in err_str.lower() or "varying(255)" in err_str:
+                err_str = "One or more patient details exceed the maximum allowed length (255 characters). Please shorten your input."
+            return Response({"detail": err_str, "error": err_str}, status=400)
 
 
 class DownloadPatientTemplateView(APIView):
@@ -277,6 +280,97 @@ class PatientProfileDetailView(APIView):
             ]
             read_only_fields = ['email', 'full_name', 'bmi']
 
+        def to_internal_value(self, data):
+            if hasattr(data, 'copy'):
+                mutable_data = data.copy()
+            elif hasattr(data, 'dict'):
+                mutable_data = data.dict()
+            else:
+                mutable_data = dict(data)
+
+            # Clean empty strings and null-like strings for nullable fields
+            nullable_fields = ['date_of_birth', 'height_cm', 'weight_kg', 'country', 'city', 'mobile_number', 'occupation']
+            for f in nullable_fields:
+                if f in mutable_data and mutable_data[f] in ['', 'null', 'None', 'undefined']:
+                    mutable_data[f] = None
+
+            # Convert numeric strings
+            if mutable_data.get('weight_kg') is not None and str(mutable_data.get('weight_kg')).strip() != '':
+                try:
+                    mutable_data['weight_kg'] = float(mutable_data['weight_kg'])
+                except (ValueError, TypeError):
+                    pass
+
+            if mutable_data.get('height_cm') is not None and str(mutable_data.get('height_cm')).strip() != '':
+                try:
+                    mutable_data['height_cm'] = float(mutable_data['height_cm'])
+                except (ValueError, TypeError):
+                    pass
+
+            # Normalize choices
+            if 'gender' in mutable_data and mutable_data['gender']:
+                mutable_data['gender'] = str(mutable_data['gender']).strip().lower()
+            elif 'gender' in mutable_data and not mutable_data['gender']:
+                mutable_data.pop('gender', None)
+
+            # Map common goal representations
+            if 'goal' in mutable_data and mutable_data['goal']:
+                goal_val = str(mutable_data['goal']).strip().lower().replace('_', ' ')
+                if 'loss' in goal_val or 'lose' in goal_val or 'decrease' in goal_val or 'cut' in goal_val:
+                    mutable_data['goal'] = 'Lose Weight'
+                elif 'gain' in goal_val or 'increase' in goal_val or 'bulk' in goal_val:
+                    mutable_data['goal'] = 'Gain Weight'
+                elif 'maintain' in goal_val or 'maintenance' in goal_val or 'keep' in goal_val:
+                    mutable_data['goal'] = 'Maintain Weight'
+                else:
+                    for valid_choice in ['Lose Weight', 'Maintain Weight', 'Gain Weight']:
+                        if goal_val == valid_choice.lower():
+                            mutable_data['goal'] = valid_choice
+                            break
+            elif 'goal' in mutable_data and not mutable_data['goal']:
+                mutable_data['goal'] = None
+
+            # Map common activity_level representations
+            if 'activity_level' in mutable_data and mutable_data['activity_level']:
+                act_val = str(mutable_data['activity_level']).strip().lower().replace('_', ' ')
+                if 'sedentary' in act_val:
+                    mutable_data['activity_level'] = 'Sedentary'
+                elif 'light' in act_val:
+                    mutable_data['activity_level'] = 'Lightly Active'
+                elif 'mod' in act_val:
+                    mutable_data['activity_level'] = 'Moderately Active'
+                elif 'extra' in act_val:
+                    mutable_data['activity_level'] = 'Extra Active'
+                elif 'very' in act_val:
+                    mutable_data['activity_level'] = 'Very Active'
+                elif 'active' in act_val:
+                    mutable_data['activity_level'] = 'Moderately Active'
+                else:
+                    for valid_choice in ['Sedentary', 'Lightly Active', 'Moderately Active', 'Very Active', 'Extra Active']:
+                        if act_val == valid_choice.lower():
+                            mutable_data['activity_level'] = valid_choice
+                            break
+            elif 'activity_level' in mutable_data and not mutable_data['activity_level']:
+                mutable_data['activity_level'] = None
+
+            # Map diet_type
+            if 'diet_type' in mutable_data and mutable_data['diet_type']:
+                dt_val = str(mutable_data['diet_type']).strip().lower().replace('_', ' ')
+                if 'non' in dt_val:
+                    mutable_data['diet_type'] = 'Non Vegetarian'
+                elif 'veg' in dt_val and 'non' not in dt_val:
+                    mutable_data['diet_type'] = 'Vegetarian'
+                elif 'vegan' in dt_val:
+                    mutable_data['diet_type'] = 'Vegan'
+                elif 'eggetarian' in dt_val:
+                    mutable_data['diet_type'] = 'Eggetarian'
+                elif 'keto' in dt_val:
+                    mutable_data['diet_type'] = 'Keto'
+            elif 'diet_type' in mutable_data and not mutable_data['diet_type']:
+                mutable_data.pop('diet_type', None)
+
+            return super().to_internal_value(mutable_data)
+
     def get(self, request, patient_id):
         if not PatientAssignment.objects.filter(nutritionist=request.user, patient_id=patient_id).exists():
             return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
@@ -309,9 +403,9 @@ class PatientProfileDetailView(APIView):
 
         serializer = self.PatientProfileSerializer1(instance=user_profile, data=request.data, partial=True)
         if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            profile_obj = serializer.save()
+            return Response(self.PatientProfileSerializer1(profile_obj).data, status=status.HTTP_200_OK)
+        return Response({"detail": "Failed to update profile.", "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class PatientLabReportsView(generics.ListAPIView):
@@ -745,8 +839,13 @@ class ArchiveDietPlanView(APIView):
             if not PatientAssignment.objects.filter(nutritionist=request.user, patient=plan.user).exists() and plan.reviewed_by != request.user:
                 return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
             plan.is_deleted = True
-            plan.save(update_fields=['is_deleted', 'updated_at'])
-            return Response({"message": "The diet plan has been successfully archived."}, status=status.HTTP_200_OK)
+            plan.status = 'disabled'
+            plan.save(update_fields=['is_deleted', 'status', 'updated_at'])
+            return Response({
+                "message": "The diet plan has been successfully disabled.",
+                "status": "disabled",
+                "is_deleted": True
+            }, status=status.HTTP_200_OK)
         except DietRecommendation.DoesNotExist:
             return Response({'error': 'Diet plan not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -766,8 +865,13 @@ class RestoreDietPlanView(APIView):
             if not PatientAssignment.objects.filter(nutritionist=request.user, patient=plan.user).exists() and plan.reviewed_by != request.user:
                 return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
             plan.is_deleted = False
-            plan.save(update_fields=['is_deleted', 'updated_at'])
-            return Response({"message": "The diet plan has been successfully restored."}, status=status.HTTP_200_OK)
+            plan.status = 'approved'
+            plan.save(update_fields=['is_deleted', 'status', 'updated_at'])
+            return Response({
+                "message": "The diet plan has been successfully restored.",
+                "status": "approved",
+                "is_deleted": False
+            }, status=status.HTTP_200_OK)
         except DietRecommendation.DoesNotExist:
             return Response({'error': 'Diet plan not found.'}, status=status.HTTP_404_NOT_FOUND)
 

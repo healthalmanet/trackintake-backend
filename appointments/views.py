@@ -502,30 +502,64 @@ class NutritionistAddAvailabilityView(APIView):
             created_slots = []
             errors = []
             
-            with transaction.atomic():
-                for item in serializer.validated_data:
-                    slot = AvailabilitySlot(
+            # Fetch all distinct dates in the bulk payload
+            dates = {item['date'] for item in serializer.validated_data}
+            existing_slots = AvailabilitySlot.objects.filter(
+                nutritionist=request.user,
+                date__in=dates
+            ).values('date', 'start_time', 'end_time')
+            
+            # Map existing slots by date for fast in-memory overlap checking
+            existing_by_date = {}
+            for s in existing_slots:
+                existing_by_date.setdefault(s['date'], []).append((s['start_time'], s['end_time']))
+            
+            slots_to_create = []
+            for item in serializer.validated_data:
+                d = item['date']
+                st = item['start_time']
+                et = item['end_time']
+                
+                if st >= et:
+                    errors.append(f"{d} {st}-{et}: Start time must be before end time.")
+                    continue
+                
+                day_slots = existing_by_date.get(d, [])
+                overlap = False
+                for ex_st, ex_et in day_slots:
+                    if st < ex_et and et > ex_st:
+                        overlap = True
+                        break
+                
+                if overlap:
+                    errors.append(f"{d} {st}-{et}: Overlaps with an existing slot.")
+                    continue
+                
+                day_slots.append((st, et))
+                existing_by_date[d] = day_slots
+                slots_to_create.append(
+                    AvailabilitySlot(
                         nutritionist=request.user,
                         is_booked=False,
                         **item
                     )
-                    try:
-                        slot.full_clean()
-                        slot.save()
-                        created_slots.append(slot)
-                    except Exception as e:
-                        errors.append(f"{item.get('start_time')}-{item.get('end_time')}: {str(e)}")
+                )
+            
+            if slots_to_create:
+                with transaction.atomic():
+                    created_slots = AvailabilitySlot.objects.bulk_create(slots_to_create)
             
             if not created_slots and errors:
                 return Response(
-                    {"detail": "Failed to create slots.", "errors": errors},
+                    {"detail": "Failed to create slots. All requested slots conflict with existing availability.", "errors": errors},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            profile = getattr(request.user, "nutritionist_profile", None)
             return Response(
                 {
                     "created_count": len(created_slots),
-                    "slots": AvailabilitySlotSerializer(created_slots, many=True).data,
+                    "slots": AvailabilitySlotSerializer(created_slots, many=True, context={"nutritionist_profile": profile}).data,
                     "errors": errors if errors else None,
                 },
                 status=status.HTTP_201_CREATED
