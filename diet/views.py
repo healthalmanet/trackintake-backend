@@ -51,6 +51,13 @@ class DietPlanView(APIView):
                 for_week_starting__gte=today - timedelta(days=14)
             ).order_by('-for_week_starting').first()
 
+            if not active_plan:
+                # Also check if there's an upcoming approved plan scheduled for future dates
+                active_plan = DietRecommendation.objects.filter(
+                    user=user, status='approved',
+                    for_week_starting__gt=today
+                ).order_by('for_week_starting').first()
+
             if active_plan:
                 serializer = DietRecommendationSerializer(active_plan)
                 return Response({
@@ -147,9 +154,20 @@ class DietPlanView(APIView):
 #
 #            plan_json = convert_to_builtin_type(plan_json)
 
+            start_date_str = request.data.get("start_date") or request.data.get("for_week_starting")
+            today = timezone.localdate()
+            if start_date_str:
+                from django.utils.dateparse import parse_date
+                parsed_date = parse_date(str(start_date_str).strip())
+                if parsed_date and parsed_date < today:
+                    return Response({"error": "Start date cannot be in the past."}, status=status.HTTP_400_BAD_REQUEST)
+                plan_start_date = parsed_date if parsed_date else today
+            else:
+                plan_start_date = today
+
             new_recommendation = DietRecommendation.objects.create(
                 user=user,
-                for_week_starting=now().date(),
+                for_week_starting=plan_start_date,
                 meals=plan_json,
                 original_ai_plan=plan_json,
                 user_profile_snapshot=user_vector_list,

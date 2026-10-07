@@ -189,9 +189,10 @@ class SendMessageView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated, CanSendMessage]
 
     def perform_create(self, serializer):
+        flag = "nutri_chat_allowed" if getattr(self.request.user, 'role', None) == 'nutritionist' else "chat_allowed"
         require_plan_feature(
             self.request.user,
-            "chat_allowed"
+            flag
         )
         receiver_id = self.request.data.get("receiver")
         message = serializer.save(sender=self.request.user, receiver_id=receiver_id)
