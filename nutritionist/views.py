@@ -40,8 +40,10 @@ from user.models import User
 from user.serializers import sanitize_json_string_list
 
 from utils.gemini import fetch_nutrition_from_gemini, food_search_gemini
+from utils.utils import calculate_target_nutrients
 from utils.generative import (
     generate_ai_plan_for_patient,
+    calculate_single_meal_nutrition_gemini,
     _serialize_user_profile,
     _serialize_lab_report,
     _calculate_target_nutrients,
@@ -133,13 +135,13 @@ class AssignedPatientsView(generics.ListAPIView):
     serializer_class = UserSerializer1
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['email']
-    search_fields = ['full_name']
+    search_fields = ['full_name', 'email']
 
     def get_queryset(self):
         assigned_patient_ids = PatientAssignment.objects.filter(
             nutritionist=self.request.user
         ).values_list('patient_id', flat=True)
-        return User.objects.filter(id__in=assigned_patient_ids).select_related('userprofile')
+        return User.objects.filter(id__in=assigned_patient_ids).select_related('userprofile', 'nutritionist_profile').order_by('-id')
 
 
 class NutritionistCreatePatientView(generics.GenericAPIView):
@@ -185,7 +187,10 @@ class NutritionistCreatePatientView(generics.GenericAPIView):
                     status=201
                 )
         except Exception as e:
-            return Response({"detail": str(e), "error": str(e)}, status=400)
+            err_str = str(e)
+            if "value too long" in err_str.lower() or "varying(255)" in err_str:
+                err_str = "One or more patient details exceed the maximum allowed length (255 characters). Please shorten your input."
+            return Response({"detail": err_str, "error": err_str}, status=400)
 
 
 class DownloadPatientTemplateView(APIView):
@@ -277,6 +282,97 @@ class PatientProfileDetailView(APIView):
             ]
             read_only_fields = ['email', 'full_name', 'bmi']
 
+        def to_internal_value(self, data):
+            if hasattr(data, 'copy'):
+                mutable_data = data.copy()
+            elif hasattr(data, 'dict'):
+                mutable_data = data.dict()
+            else:
+                mutable_data = dict(data)
+
+            # Clean empty strings and null-like strings for nullable fields
+            nullable_fields = ['date_of_birth', 'height_cm', 'weight_kg', 'country', 'city', 'mobile_number', 'occupation']
+            for f in nullable_fields:
+                if f in mutable_data and mutable_data[f] in ['', 'null', 'None', 'undefined']:
+                    mutable_data[f] = None
+
+            # Convert numeric strings
+            if mutable_data.get('weight_kg') is not None and str(mutable_data.get('weight_kg')).strip() != '':
+                try:
+                    mutable_data['weight_kg'] = float(mutable_data['weight_kg'])
+                except (ValueError, TypeError):
+                    pass
+
+            if mutable_data.get('height_cm') is not None and str(mutable_data.get('height_cm')).strip() != '':
+                try:
+                    mutable_data['height_cm'] = float(mutable_data['height_cm'])
+                except (ValueError, TypeError):
+                    pass
+
+            # Normalize choices
+            if 'gender' in mutable_data and mutable_data['gender']:
+                mutable_data['gender'] = str(mutable_data['gender']).strip().lower()
+            elif 'gender' in mutable_data and not mutable_data['gender']:
+                mutable_data.pop('gender', None)
+
+            # Map common goal representations
+            if 'goal' in mutable_data and mutable_data['goal']:
+                goal_val = str(mutable_data['goal']).strip().lower().replace('_', ' ')
+                if 'loss' in goal_val or 'lose' in goal_val or 'decrease' in goal_val or 'cut' in goal_val:
+                    mutable_data['goal'] = 'Lose Weight'
+                elif 'gain' in goal_val or 'increase' in goal_val or 'bulk' in goal_val:
+                    mutable_data['goal'] = 'Gain Weight'
+                elif 'maintain' in goal_val or 'maintenance' in goal_val or 'keep' in goal_val:
+                    mutable_data['goal'] = 'Maintain Weight'
+                else:
+                    for valid_choice in ['Lose Weight', 'Maintain Weight', 'Gain Weight']:
+                        if goal_val == valid_choice.lower():
+                            mutable_data['goal'] = valid_choice
+                            break
+            elif 'goal' in mutable_data and not mutable_data['goal']:
+                mutable_data['goal'] = None
+
+            # Map common activity_level representations
+            if 'activity_level' in mutable_data and mutable_data['activity_level']:
+                act_val = str(mutable_data['activity_level']).strip().lower().replace('_', ' ')
+                if 'sedentary' in act_val:
+                    mutable_data['activity_level'] = 'Sedentary'
+                elif 'light' in act_val:
+                    mutable_data['activity_level'] = 'Lightly Active'
+                elif 'mod' in act_val:
+                    mutable_data['activity_level'] = 'Moderately Active'
+                elif 'extra' in act_val:
+                    mutable_data['activity_level'] = 'Extra Active'
+                elif 'very' in act_val:
+                    mutable_data['activity_level'] = 'Very Active'
+                elif 'active' in act_val:
+                    mutable_data['activity_level'] = 'Moderately Active'
+                else:
+                    for valid_choice in ['Sedentary', 'Lightly Active', 'Moderately Active', 'Very Active', 'Extra Active']:
+                        if act_val == valid_choice.lower():
+                            mutable_data['activity_level'] = valid_choice
+                            break
+            elif 'activity_level' in mutable_data and not mutable_data['activity_level']:
+                mutable_data['activity_level'] = None
+
+            # Map diet_type
+            if 'diet_type' in mutable_data and mutable_data['diet_type']:
+                dt_val = str(mutable_data['diet_type']).strip().lower().replace('_', ' ')
+                if 'non' in dt_val:
+                    mutable_data['diet_type'] = 'Non Vegetarian'
+                elif 'veg' in dt_val and 'non' not in dt_val:
+                    mutable_data['diet_type'] = 'Vegetarian'
+                elif 'vegan' in dt_val:
+                    mutable_data['diet_type'] = 'Vegan'
+                elif 'eggetarian' in dt_val:
+                    mutable_data['diet_type'] = 'Eggetarian'
+                elif 'keto' in dt_val:
+                    mutable_data['diet_type'] = 'Keto'
+            elif 'diet_type' in mutable_data and not mutable_data['diet_type']:
+                mutable_data.pop('diet_type', None)
+
+            return super().to_internal_value(mutable_data)
+
     def get(self, request, patient_id):
         if not PatientAssignment.objects.filter(nutritionist=request.user, patient_id=patient_id).exists():
             return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
@@ -309,9 +405,9 @@ class PatientProfileDetailView(APIView):
 
         serializer = self.PatientProfileSerializer1(instance=user_profile, data=request.data, partial=True)
         if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            profile_obj = serializer.save()
+            return Response(self.PatientProfileSerializer1(profile_obj).data, status=status.HTTP_200_OK)
+        return Response({"detail": "Failed to update profile.", "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class PatientLabReportsView(generics.ListAPIView):
@@ -393,7 +489,7 @@ class PatientMealLogView(generics.ListAPIView):
         patient_id = self.kwargs['patient_id']
         if not PatientAssignment.objects.filter(nutritionist=self.request.user, patient_id=patient_id).exists():
             raise PermissionDenied("You are not assigned to this patient.")
-        return UserMeal.objects.filter(user_id=patient_id).select_related('food_item').order_by('-consumed_at')
+        return UserMeal.objects.filter(user_id=patient_id).select_related('food_item')
 
 
 class PatientDailySummaryView(APIView):
@@ -443,70 +539,8 @@ class TargetNutrientsForPatientView(APIView):
             today = parse_date(current_date_str) if current_date_str else date.today()
 
             profile = UserProfile.objects.get(user_id=patient_id)
-            dob = profile.date_of_birth
-            if dob:
-                try:
-                    age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-                except Exception:
-                    age = 30
-            else:
-                age = 30
-
-            weight = float(profile.weight_kg) if profile.weight_kg else 65.0
-            height = float(profile.height_cm) if profile.height_cm else 170.0
-            gender = str(profile.gender or "other").lower()
-            activity_level = str(profile.activity_level or "sedentary").lower()
-            goal = str(profile.goal or "maintain")
-
-            bmr = 10 * weight + 6.25 * height - 5 * age + (5 if gender == "male" else -161)
-
-            activity_multipliers = {
-                "sedentary": 1.2, "light": 1.3, "lightly_active": 1.3,
-                "moderate": 1.45, "active": 1.6, "very_active": 1.75
-            }
-            maintenance_calories = bmr * activity_multipliers.get(activity_level.lower(), 1.2)
-
-            if "gain" in goal.lower():
-                recommended_calories = maintenance_calories * 1.15
-                target_weight = weight + 5
-            elif "lose" in goal.lower():
-                recommended_calories = maintenance_calories * 0.8
-                target_weight = weight - 5
-            else:
-                recommended_calories = maintenance_calories
-                target_weight = weight
-
-            recommended_calories = round(recommended_calories)
-            protein_g = round(weight * 1.8)
-            fats_g = round(weight * 0.8)
-            carbs_calories = recommended_calories - (protein_g * 4 + fats_g * 9)
-            carbs_g = round(carbs_calories / 4) if carbs_calories > 0 else 0
-            sugar_g = round((recommended_calories * 0.1) / 4)
-            fiber_g = round((recommended_calories / 1000) * 14)
-
-            base_water_ml = weight * 35
-            activity_water_bonus = {
-                "sedentary": 0, "light": 250, "lightly_active": 250,
-                "moderate": 500, "active": 750, "very_active": 1000
-            }
-            recommended_water_ml = base_water_ml + activity_water_bonus.get(activity_level.lower(), 0)
-
-            return Response({
-                "bmr": round(bmr),
-                "maintenance_calories": round(maintenance_calories),
-                "recommended_calories": recommended_calories,
-                "macronutrients": {
-                    "protein_g": protein_g, "carbs_g": carbs_g,
-                    "fats_g": fats_g, "sugar_g": sugar_g, "fiber_g": fiber_g
-                },
-                "water": {"recommended_ml": round(recommended_water_ml)},
-                "weight_target": {
-                    "current_weight_kg": round(weight, 1),
-                    "target_weight_kg": round(target_weight, 1),
-                    "goal": goal
-                },
-                "activity_level": activity_level
-            })
+            targets = calculate_target_nutrients(profile, current_date=today)
+            return Response(targets, status=status.HTTP_200_OK)
 
         except UserProfile.DoesNotExist:
             return Response({'error': 'Patient profile not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -603,22 +637,48 @@ class EditDietPlanView(generics.GenericAPIView):
     serializer_class = DietRecommendationDetailSerializer
     queryset = DietRecommendation.objects.select_related('user', 'reviewed_by').all()
 
+    def _extract_weight_or_quantity(self, text: str) -> float | None:
+        if not text:
+            return None
+        import re
+        # Match "100g", "100 gram", "100 grams", "100 gm", "100ml"
+        m = re.search(r'(\d+(?:\.\d+)?)\s*(?:g|gram|grams|gm|ml)\b', text, re.IGNORECASE)
+        if m:
+            try:
+                return float(m.group(1))
+            except (ValueError, TypeError):
+                pass
+        # Match leading count e.g. "2 roti", "3 parathas"
+        m = re.search(r'^\s*(\d+(?:\.\d+)?)\b', text)
+        if m:
+            try:
+                return float(m.group(1))
+            except (ValueError, TypeError):
+                pass
+        return None
+
     def _get_or_create_food_item(self, food_name: str):
         original_food_name = food_name.strip()
         if not original_food_name:
             return None
 
+        # 1. Exact match in DB
         food = FoodItem.objects.filter(name__iexact=original_food_name).first()
         if food:
             return food
 
+        # 2. Fuzzy match in DB
         if len(original_food_name.split()) > 1:
-            food = FoodItem.objects.annotate(
-                similarity=TrigramSimilarity('name', original_food_name)
-            ).filter(similarity__gt=FUZZY_MATCH_THRESHOLD).order_by('-similarity').first()
-            if food:
-                return food
+            try:
+                food = FoodItem.objects.annotate(
+                    similarity=TrigramSimilarity('name', original_food_name)
+                ).filter(similarity__gt=0.65).order_by('-similarity').first()
+                if food:
+                    return food
+            except Exception:
+                pass
 
+        # 3. Gemini Food Search
         try:
             gemini_food_item = food_search_gemini(original_food_name)
             if not gemini_food_item:
@@ -627,27 +687,33 @@ class EditDietPlanView(generics.GenericAPIView):
             if gemini_food_item.name.lower() != original_food_name.lower():
                 existing_food = FoodItem.objects.filter(name__iexact=original_food_name).first()
                 if existing_food:
-                    gemini_food_item.delete()
+                    try:
+                        gemini_food_item.delete()
+                    except Exception:
+                        pass
                     return existing_food
                 else:
-                    gemini_food_item.name = original_food_name
-                    gemini_food_item.save()
+                    try:
+                        gemini_food_item.name = original_food_name[:150]
+                        gemini_food_item.save(update_fields=['name'])
+                    except Exception as save_err:
+                        print(f"Warning saving gemini_food_item name: {save_err}")
 
             return gemini_food_item
         except Exception as e:
             print(f"❌ Error processing '{original_food_name}': {e}")
             return None
 
-    def _format_food_for_plan(self, food: FoodItem) -> dict:
+    def _format_food_for_plan(self, food: FoodItem, original_query: str = None) -> dict:
         return {
-            "food_name": food.name,
-            "Gram_Equivalent": food.gram_equivalent,
-            "Calories": food.calories,
-            "Protein": food.protein,
-            "Carbs": food.carbs,
-            "Fats": food.fats,
-            "Fiber": food.fiber,
-            "Sugar": food.sugar,
+            "food_name": (original_query or food.name).strip(),
+            "Gram_Equivalent": float(food.gram_equivalent or 100.0),
+            "Calories": float(food.calories or 0.0),
+            "Protein": float(food.protein or 0.0),
+            "Carbs": float(food.carbs or 0.0),
+            "Fats": float(food.fats or 0.0),
+            "Fiber": float(food.fiber or 0.0),
+            "Sugar": float(food.sugar or 0.0),
         }
 
     @transaction.atomic
@@ -680,14 +746,78 @@ class EditDietPlanView(generics.GenericAPIView):
                 db_meals.setdefault(existing_key, {})
 
                 for meal_slot, meal_info in meals_for_day.items():
-                    food_name = meal_info.get("item") if isinstance(meal_info, dict) else None
-                    if not food_name:
-                        continue
-                    food_item_obj = self._get_or_create_food_item(food_name)
-                    if food_item_obj:
-                        db_meals[existing_key][meal_slot] = self._format_food_for_plan(food_item_obj)
-                    else:
+                    food_name = meal_info.get("item") if isinstance(meal_info, dict) else (meal_info if isinstance(meal_info, str) else None)
+
+                    # Find existing slot in db_meals (handling hyphen vs space differences)
+                    existing_slot = next(
+                        (k for k in db_meals[existing_key] if k.lower().replace("-", " ") == meal_slot.lower().replace("-", " ")),
+                        meal_slot
+                    )
+                    existing_meal_data = db_meals[existing_key].get(existing_slot) or db_meals[existing_key].get(meal_slot) or {}
+
+                    # Only pop/delete if the user explicitly submitted an empty string or clear
+                    if food_name is None or (isinstance(food_name, str) and not food_name.strip()):
+                        db_meals[existing_key].pop(existing_slot, None)
                         db_meals[existing_key].pop(meal_slot, None)
+                        continue
+
+                    food_name = food_name.strip()
+
+                    # 1. Send this particular edited item to Gemini to calculate complete nutrition and portions
+                    ai_meal = calculate_single_meal_nutrition_gemini(food_name, meal_context=existing_meal_data)
+
+                    if ai_meal:
+                        formatted = ai_meal
+                    else:
+                        food_item_obj = self._get_or_create_food_item(food_name)
+                        if food_item_obj:
+                            formatted = self._format_food_for_plan(food_item_obj, original_query=food_name)
+                        else:
+                            # Fallback: NEVER delete the meal! Intelligently preserve or scale portion
+                            old_food_name = existing_meal_data.get("food_name") or ""
+                            old_weight = self._extract_weight_or_quantity(old_food_name) or existing_meal_data.get("Gram_Equivalent")
+                            new_weight = self._extract_weight_or_quantity(food_name)
+
+                            ratio = 1.0
+                            if old_weight and new_weight and old_weight > 0:
+                                ratio = new_weight / old_weight
+
+                            new_meal = copy.deepcopy(existing_meal_data)
+                            new_meal["food_name"] = food_name
+
+                            if 0.05 <= ratio <= 10.0 and ratio != 1.0:
+                                if new_weight:
+                                    new_meal["Gram_Equivalent"] = round(new_weight)
+                                elif "Gram_Equivalent" in new_meal:
+                                    new_meal["Gram_Equivalent"] = round(float(new_meal["Gram_Equivalent"] or 100) * ratio)
+
+                                if "Calories" in new_meal:
+                                    new_meal["Calories"] = max(5.0, round(float(new_meal["Calories"] or 0) * ratio, 1))
+                                if "Protein" in new_meal:
+                                    new_meal["Protein"] = round(float(new_meal["Protein"] or 0) * ratio, 1)
+                                if "Carbs" in new_meal:
+                                    new_meal["Carbs"] = round(float(new_meal["Carbs"] or 0) * ratio, 1)
+                                if "Fats" in new_meal:
+                                    new_meal["Fats"] = round(float(new_meal["Fats"] or 0) * ratio, 1)
+                                if "Sugar" in new_meal:
+                                    new_meal["Sugar"] = round(float(new_meal["Sugar"] or 0) * ratio, 1)
+                                if "Fiber" in new_meal:
+                                    new_meal["Fiber"] = round(float(new_meal["Fiber"] or 0) * ratio, 1)
+                            elif not new_meal.get("Calories"):
+                                new_meal.update({
+                                    "Gram_Equivalent": new_weight or 100.0,
+                                    "Calories": 200.0,
+                                    "Protein": 10.0,
+                                    "Carbs": 30.0,
+                                    "Fats": 5.0,
+                                    "Sugar": 3.0,
+                                    "Fiber": 3.0,
+                                })
+                            formatted = new_meal
+
+                    if existing_slot != meal_slot and existing_slot in db_meals[existing_key]:
+                        db_meals[existing_key].pop(existing_slot, None)
+                    db_meals[existing_key][meal_slot] = formatted
 
             recommendation.meals = db_meals
 
@@ -745,8 +875,13 @@ class ArchiveDietPlanView(APIView):
             if not PatientAssignment.objects.filter(nutritionist=request.user, patient=plan.user).exists() and plan.reviewed_by != request.user:
                 return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
             plan.is_deleted = True
-            plan.save(update_fields=['is_deleted', 'updated_at'])
-            return Response({"message": "The diet plan has been successfully archived."}, status=status.HTTP_200_OK)
+            plan.status = 'disabled'
+            plan.save(update_fields=['is_deleted', 'status', 'updated_at'])
+            return Response({
+                "message": "The diet plan has been successfully disabled.",
+                "status": "disabled",
+                "is_deleted": True
+            }, status=status.HTTP_200_OK)
         except DietRecommendation.DoesNotExist:
             return Response({'error': 'Diet plan not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -766,8 +901,13 @@ class RestoreDietPlanView(APIView):
             if not PatientAssignment.objects.filter(nutritionist=request.user, patient=plan.user).exists() and plan.reviewed_by != request.user:
                 return Response({'error': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
             plan.is_deleted = False
-            plan.save(update_fields=['is_deleted', 'updated_at'])
-            return Response({"message": "The diet plan has been successfully restored."}, status=status.HTTP_200_OK)
+            plan.status = 'approved'
+            plan.save(update_fields=['is_deleted', 'status', 'updated_at'])
+            return Response({
+                "message": "The diet plan has been successfully restored.",
+                "status": "approved",
+                "is_deleted": False
+            }, status=status.HTTP_200_OK)
         except DietRecommendation.DoesNotExist:
             return Response({'error': 'Diet plan not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -811,9 +951,27 @@ class GeneratePlanForPatientView(APIView):
         if DietRecommendation.objects.filter(user=patient, status__in=["pending", "generating"]).exists():
             return Response({"error": "Plan already generating or pending."}, status=409)
 
+        start_date_str = request.data.get("start_date") or request.data.get("for_week_starting")
+        today = timezone.localdate()
+        if start_date_str:
+            parsed_date = parse_date(str(start_date_str).strip())
+            if not parsed_date:
+                return Response(
+                    {"error": "Invalid date format. Expected YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if parsed_date < today:
+                return Response(
+                    {"error": "Start date cannot be in the past. Please select today or a future date."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            plan_start_date = parsed_date
+        else:
+            plan_start_date = today
+
         placeholder = DietRecommendation.objects.create(
             user=patient,
-            for_week_starting=timezone.now().date(),
+            for_week_starting=plan_start_date,
             meals={},
             original_ai_plan={},
             status="generating",
@@ -835,7 +993,7 @@ class GeneratePlanForPatientView(APIView):
 
             profile_dict = _serialize_user_profile(profile)
             report_dict = _serialize_lab_report(report)
-            targets_dict = _calculate_target_nutrients(profile_dict)
+            targets_dict = calculate_target_nutrients(profile)
 
             plan_json, error = generate_ai_plan_for_patient(profile_dict, report_dict, targets_dict)
 

@@ -66,6 +66,7 @@ class PatientProfileSerializer1(serializers.ModelSerializer):
     # Nest the user's basic info directly
     email = serializers.EmailField(source='user.email', read_only=True)
     full_name = serializers.CharField(source='user.full_name', read_only=True)
+    bmi = serializers.FloatField(read_only=True)
 
     class Meta:
         model = UserProfile
@@ -77,6 +78,95 @@ class PatientProfileSerializer1(serializers.ModelSerializer):
             'has_heart_condition', 'has_thyroid_disorder', 'has_arthritis',
             'has_gastric_issues', 'other_chronic_condition', 'family_history'
         ]
+        read_only_fields = ['email', 'full_name', 'bmi']
+
+    def to_internal_value(self, data):
+        if hasattr(data, 'copy'):
+            mutable_data = data.copy()
+        elif hasattr(data, 'dict'):
+            mutable_data = data.dict()
+        else:
+            mutable_data = dict(data)
+
+        # Clean empty strings and null-like strings for nullable fields
+        nullable_fields = ['date_of_birth', 'height_cm', 'weight_kg', 'country', 'city', 'mobile_number', 'occupation']
+        for f in nullable_fields:
+            if f in mutable_data and mutable_data[f] in ['', 'null', 'None', 'undefined']:
+                mutable_data[f] = None
+
+        # Convert numeric strings
+        if mutable_data.get('weight_kg') is not None and str(mutable_data.get('weight_kg')).strip() != '':
+            try:
+                mutable_data['weight_kg'] = float(mutable_data['weight_kg'])
+            except (ValueError, TypeError):
+                pass
+
+        if mutable_data.get('height_cm') is not None and str(mutable_data.get('height_cm')).strip() != '':
+            try:
+                mutable_data['height_cm'] = float(mutable_data['height_cm'])
+            except (ValueError, TypeError):
+                pass
+
+        # Normalize choices
+        if 'gender' in mutable_data and mutable_data['gender']:
+            mutable_data['gender'] = str(mutable_data['gender']).strip().lower()
+        elif 'gender' in mutable_data and not mutable_data['gender']:
+            mutable_data.pop('gender', None)
+
+        if 'goal' in mutable_data and mutable_data['goal']:
+            goal_val = str(mutable_data['goal']).strip().lower().replace('_', ' ')
+            if 'loss' in goal_val or 'lose' in goal_val or 'decrease' in goal_val or 'cut' in goal_val:
+                mutable_data['goal'] = 'Lose Weight'
+            elif 'gain' in goal_val or 'increase' in goal_val or 'bulk' in goal_val:
+                mutable_data['goal'] = 'Gain Weight'
+            elif 'maintain' in goal_val or 'maintenance' in goal_val or 'keep' in goal_val:
+                mutable_data['goal'] = 'Maintain Weight'
+            else:
+                for valid_choice in ['Lose Weight', 'Maintain Weight', 'Gain Weight']:
+                    if goal_val == valid_choice.lower():
+                        mutable_data['goal'] = valid_choice
+                        break
+        elif 'goal' in mutable_data and not mutable_data['goal']:
+            mutable_data['goal'] = None
+
+        if 'activity_level' in mutable_data and mutable_data['activity_level']:
+            act_val = str(mutable_data['activity_level']).strip().lower().replace('_', ' ')
+            if 'sedentary' in act_val:
+                mutable_data['activity_level'] = 'Sedentary'
+            elif 'light' in act_val:
+                mutable_data['activity_level'] = 'Lightly Active'
+            elif 'mod' in act_val:
+                mutable_data['activity_level'] = 'Moderately Active'
+            elif 'extra' in act_val:
+                mutable_data['activity_level'] = 'Extra Active'
+            elif 'very' in act_val:
+                mutable_data['activity_level'] = 'Very Active'
+            elif 'active' in act_val:
+                mutable_data['activity_level'] = 'Moderately Active'
+            else:
+                for valid_choice in ['Sedentary', 'Lightly Active', 'Moderately Active', 'Very Active', 'Extra Active']:
+                    if act_val == valid_choice.lower():
+                        mutable_data['activity_level'] = valid_choice
+                        break
+        elif 'activity_level' in mutable_data and not mutable_data['activity_level']:
+            mutable_data['activity_level'] = None
+
+        if 'diet_type' in mutable_data and mutable_data['diet_type']:
+            dt_val = str(mutable_data['diet_type']).strip().lower().replace('_', ' ')
+            if 'non' in dt_val:
+                mutable_data['diet_type'] = 'Non Vegetarian'
+            elif 'veg' in dt_val and 'non' not in dt_val:
+                mutable_data['diet_type'] = 'Vegetarian'
+            elif 'vegan' in dt_val:
+                mutable_data['diet_type'] = 'Vegan'
+            elif 'eggetarian' in dt_val:
+                mutable_data['diet_type'] = 'Eggetarian'
+            elif 'keto' in dt_val:
+                mutable_data['diet_type'] = 'Keto'
+        elif 'diet_type' in mutable_data and not mutable_data['diet_type']:
+            mutable_data.pop('diet_type', None)
+
+        return super().to_internal_value(mutable_data)
 
 class UserMealSerializer1(serializers.ModelSerializer):
     """
@@ -160,16 +250,35 @@ class LabReportSerializer(serializers.ModelSerializer):
 
 class CreatePatientSerializer(serializers.Serializer):
     # User fields
-    email = serializers.EmailField()
-    full_name = serializers.CharField()
-    password = serializers.CharField(write_only=True, required=False, default="Default@123")
+    email = serializers.EmailField(
+        max_length=254,
+        error_messages={'max_length': 'Email address cannot exceed 254 characters.'}
+    )
+    full_name = serializers.CharField(
+        max_length=255,
+        error_messages={'max_length': 'Full name cannot exceed 255 characters.'}
+    )
+    password = serializers.CharField(
+        write_only=True, required=False, default="Default@123",
+        max_length=128,
+        error_messages={'max_length': 'Password cannot exceed 128 characters.'}
+    )
 
     # Profile fields
     date_of_birth = serializers.DateField(required=False)
     gender = serializers.ChoiceField(choices=[("male", "Male"), ("female", "Female"), ("other", "Other")], required=False)
-    mobile_number = serializers.CharField(required=False, allow_blank=True)
-    country = serializers.CharField(required=False, allow_blank=True)
-    occupation = serializers.CharField(required=False, allow_blank=True)
+    mobile_number = serializers.CharField(
+        required=False, allow_blank=True, max_length=15,
+        error_messages={'max_length': 'Mobile number cannot exceed 15 characters.'}
+    )
+    country = serializers.CharField(
+        required=False, allow_blank=True, max_length=100,
+        error_messages={'max_length': 'Country cannot exceed 100 characters.'}
+    )
+    occupation = serializers.CharField(
+        required=False, allow_blank=True, max_length=100,
+        error_messages={'max_length': 'Occupation cannot exceed 100 characters.'}
+    )
     height_cm = serializers.FloatField(required=False)
     weight_kg = serializers.FloatField(required=False)
     activity_level = serializers.ChoiceField(choices=[

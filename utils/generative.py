@@ -40,52 +40,73 @@ def _serialize_lab_report(report: LabReport | None) -> dict:
     if not report: return {}
     return {"waist_circumference_cm": report.waist_circumference_cm, "blood_pressure_systolic": report.blood_pressure_systolic, "blood_pressure_diastolic": report.blood_pressure_diastolic, "fasting_blood_sugar": report.fasting_blood_sugar, "postprandial_sugar": report.postprandial_sugar, "hba1c": report.hba1c, "ldl_cholesterol": report.ldl_cholesterol, "hdl_cholesterol": report.hdl_cholesterol, "triglycerides": report.triglycerides, "crp": report.crp, "esr": report.esr, "uric_acid": report.uric_acid, "creatinine": report.creatinine, "urea": report.urea, "alt": report.alt, "ast": report.ast, "vitamin_d3": report.vitamin_d3, "vitamin_b12": report.vitamin_b12, "tsh": report.tsh, }
 def _calculate_target_nutrients(data: dict) -> dict:
-    """Calculates nutritional targets with robust safety checks and defaults."""
-    if not isinstance(data, dict):
-        data = {}
-    today = date.today()
-    dob_str = data.get('date_of_birth')
-    if dob_str:
-        try:
-            dob = datetime.strptime(str(dob_str).strip(), '%Y-%m-%d').date()
-            age = today.year - dob.year - ((today.month, today.day) < (dob.month, today.day))
-        except Exception:
-            age = 30
-    else:
-        age = 30
+    """Calculates nutritional targets using canonical engine."""
+    from utils.utils import calculate_target_nutrients
+    return calculate_target_nutrients(data)
 
-    w = float(data.get('weight_kg') or 65.0)
-    h = float(data.get('height_cm') or 170.0)
-    g = str(data.get('gender') or 'other').lower()
-    goal = str(data.get('goal') or 'maintain').lower()
-    act = str(data.get('activity_level') or 'sedentary').lower()
 
-    bmr = 10 * w + 6.25 * h - 5 * age + (5 if g == "male" else -161)
-    mults = {"sedentary": 1.2, "lightly active": 1.375, "light": 1.375, "moderately active": 1.55, "moderate": 1.55, "very active": 1.725, "extra active": 1.9}
-    key = next((k for k in mults if act.startswith(k)), "sedentary")
-    rec_cals = bmr * mults[key]
-    is_female = g != 'male'
-    if data.get('is_pregnant') and is_female:
-        goal = 'maintain weight'
-        rec_cals += 340 if data.get('current_trimester') == 2 else (450 if data.get('current_trimester') == 3 else 0)
-    elif data.get('is_breastfeeding') and is_female:
-        rec_cals += 500
-    if "gain" in goal:
-        rec_cals += 400
-    elif "lose" in goal:
-        rec_cals -= 500
-    protein_g = round(w * 1.8)
-    if (data.get('is_pregnant') or data.get('is_breastfeeding')) and is_female:
-        protein_g = max(protein_g, round(w * 1.1) + 25)
-    fats_g = round(w * 0.8)
-    carbs_g = round((rec_cals - (protein_g * 4 + fats_g * 9)) / 4) if rec_cals > (protein_g * 4 + fats_g * 9) else 0
-    return {"recommended_calories": round(rec_cals), "protein_g": protein_g, "carbs_g": carbs_g, "fats_g": fats_g}
+def _normalize_plan_to_target(plan_json: dict, target_calories: float) -> dict:
+    """
+    Guarantees that the sum of calories for each day (Day 1, Day 2, Day 3)
+    accurately matches target_calories within 0-1 kcal, scaling macros proportionally.
+    """
+    if not isinstance(plan_json, dict) or not target_calories or target_calories <= 0:
+        return plan_json
+
+    target_calories = float(target_calories)
+
+    for day_key in ["Day 1", "Day 2", "Day 3"]:
+        day_meals = plan_json.get(day_key)
+        if not isinstance(day_meals, dict):
+            continue
+
+        meal_keys = []
+        day_total_cal = 0.0
+        for m_name, m_data in day_meals.items():
+            if isinstance(m_data, dict) and "Calories" in m_data:
+                day_total_cal += float(m_data.get("Calories") or 0)
+                meal_keys.append(m_name)
+
+        if day_total_cal <= 0 or not meal_keys:
+            continue
+
+        ratio = target_calories / day_total_cal
+        # Scale if within a sensible range (0.5 to 2.0)
+        if 0.5 <= ratio <= 2.0:
+            running_cal = 0
+            for idx, m_name in enumerate(meal_keys):
+                m = day_meals[m_name]
+                if not isinstance(m, dict):
+                    continue
+
+                if idx == len(meal_keys) - 1:
+                    new_cal = max(10, round(target_calories - running_cal))
+                else:
+                    new_cal = max(10, round(float(m.get("Calories") or 0) * ratio))
+                    running_cal += new_cal
+
+                m["Calories"] = new_cal
+                if m.get("Protein") is not None:
+                    m["Protein"] = round(float(m["Protein"]) * ratio, 1)
+                if m.get("Carbs") is not None:
+                    m["Carbs"] = round(float(m["Carbs"]) * ratio, 1)
+                if m.get("Fats") is not None:
+                    m["Fats"] = round(float(m["Fats"]) * ratio, 1)
+                if m.get("Sugar") is not None:
+                    m["Sugar"] = round(float(m["Sugar"]) * ratio, 1)
+                if m.get("Fiber") is not None:
+                    m["Fiber"] = round(float(m["Fiber"]) * ratio, 1)
+                if m.get("Gram_Equivalent") is not None:
+                    m["Gram_Equivalent"] = round(float(m["Gram_Equivalent"]) * ratio)
+
+    return plan_json
 
 
 def generate_ai_plan_for_patient(profile_dict, report_dict, targets_dict):
     """
     PURE AI FUNCTION.
     Generates the complete 3-day meal plan and suggestion flags in ONE single Gemini API call.
+    Strictly adheres to the patient's daily target calories and macronutrients.
     No Django ORM.
     No DB access.
     No connection handling.
@@ -93,6 +114,22 @@ def generate_ai_plan_for_patient(profile_dict, report_dict, targets_dict):
     try:
         if not API_KEY:
             return None, "GEMINI_API_KEY is not configured."
+
+        rec_cals = round(float(targets_dict.get("recommended_calories") or 2000))
+        macros = targets_dict.get("macronutrients", {})
+        protein_g = round(float(targets_dict.get("protein_g") or macros.get("protein_g") or 75))
+        carbs_g = round(float(targets_dict.get("carbs_g") or macros.get("carbs_g") or 250))
+        fats_g = round(float(targets_dict.get("fats_g") or macros.get("fats_g") or 55))
+        fiber_g = round(float(targets_dict.get("fiber_g") or macros.get("fiber_g") or 30))
+
+        # Caloric budget breakdown for meals
+        early_cals = round(rec_cals * 0.05)
+        breakfast_cals = round(rec_cals * 0.25)
+        midmorning_cals = round(rec_cals * 0.10)
+        lunch_cals = round(rec_cals * 0.30)
+        afternoon_cals = round(rec_cals * 0.10)
+        dinner_cals = round(rec_cals * 0.15)
+        bedtime_cals = round(rec_cals * 0.05)
 
         prompt = f"""
 You are an expert clinical dietitian generating a complete, culturally accurate 3-day meal plan (Day 1, Day 2, Day 3) and 4 concise clinical suggestions for a patient.
@@ -103,44 +140,63 @@ User Health Profile:
 Lab Report Biomarkers (if available):
 {json.dumps(report_dict)}
 
-Daily Nutrient Targets:
-{json.dumps(targets_dict)}
+MANDATORY DAILY TARGETS:
+- Target Daily Calories: {rec_cals} kcal per day (Day 1, Day 2, Day 3 MUST each sum up to {rec_cals} kcal ±3%)
+- Target Daily Protein: {protein_g}g
+- Target Daily Carbs: {carbs_g}g
+- Target Daily Fats: {fats_g}g
+- Target Daily Fiber: {fiber_g}g
+
+SUGGESTED DAILY CALORIC BUDGET DISTRIBUTION:
+- Early-Morning: ~{early_cals} kcal (warm herbal tea, soaked nuts/seeds, water)
+- Breakfast: ~{breakfast_cals} kcal (nutrient-dense, substantial breakfast)
+- Mid-Morning Snack: ~{midmorning_cals} kcal (fruits, coconut water, or sprouts)
+- Lunch: ~{lunch_cals} kcal (main balanced meal with whole grains, lean protein, vegetables)
+- Afternoon Snack: ~{afternoon_cals} kcal (makhana, roasted chana, green tea, or nuts)
+- Dinner: ~{dinner_cals} kcal (digestible wholesome dinner)
+- Bedtime: ~{bedtime_cals} kcal (warm turmeric/herbal milk)
 
 --- GUIDELINES ---
-1. Food Culture & Region: Strictly align dishes with Country: {profile_dict.get("country", "Not specified")} and City: {profile_dict.get("city", "Not specified")}. Use staple local carbs, oils, vegetables, and proteins.
-2. Exact Quantities in Names: Every item MUST state exact volume/weight/count in both `food_name` and `quantity` (e.g., "150g Chicken Curry with 1 cup Steamed Rice (100g)").
-3. Complete Nutrition: Provide exact numeric `Gram_Equivalent`, `Calories`, `Protein`, `Carbs`, `Fats`, `Sugar`, and `Fiber` for every meal.
-4. Suggestions: 4 concise cards (1-2 sentences each) for "avoid" (Foods to Avoid), "follow" (Foods to Follow), "exercise" (Exercise & Activity), and "lifestyle" (Lifestyle & Hydration).
-5. Output ONLY valid JSON matching this schema.
+1. STRICT CALORIE ALIGNMENT (CRITICAL): The sum of Calories for all 7 meals in each day (Day 1, Day 2, Day 3) MUST add up to the daily target of {rec_cals} kcal (±3%). Adjust dish portion sizes (grams, bowls, spoons) so that total calories and macronutrients strictly adhere to this target.
+2. Food Culture & Region: Strictly align dishes with Country: {profile_dict.get("country", "Not specified")} and City: {profile_dict.get("city", "Not specified")}. Use staple local carbs, oils, vegetables, and proteins.
+3. Realistic Household Portions & Grams (CRITICAL): Every meal item MUST specify intuitive household serving measures (e.g., small/medium bowl / katori, cup, tbsp/tsp, glass, number of rotis/eggs) combined with exact gram/ml equivalents in parentheses.
+   - Required format examples:
+     * "1 Small Bowl Dal Tadka (200g) with 1 Bowl Jeera Rice (200g) and 2 tbsp Mixed Veg Sabzi (150g)"
+     * "2 Medium Rotis (60g) with 1 Medium Bowl Palak Paneer (150g) and 1 Small Cup Cucumber Raita (100g)"
+     * "1 Bowl Oats Porridge (180g) with 1 tbsp Chia Seeds (10g) and 1/2 Sliced Apple (60g)"
+     * "1 Glass Warm Turmeric Milk (200ml) with 4 Soaked Almonds (10g)"
+4. Complete Nutrition: Provide exact numeric `Gram_Equivalent`, `Calories`, `Protein`, `Carbs`, `Fats`, `Sugar`, and `Fiber` for every meal.
+5. Suggestions: 4 concise cards (1-2 sentences each) for "avoid" (Foods to Avoid), "follow" (Foods to Follow), "exercise" (Exercise & Activity), and "lifestyle" (Lifestyle & Hydration).
+6. Output ONLY valid JSON matching this schema.
 
 --- JSON SCHEMA REQUIRED ---
 {{
   "Day 1": {{
-    "Early-Morning": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Breakfast": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Mid-Morning Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Lunch": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Afternoon Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Dinner": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Bedtime": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
+    "Early-Morning": {{ "food_name": "<Full descriptive meal WITH household units and grams, e.g. '1 Glass Warm Turmeric Milk (200ml) with 4 Soaked Almonds (10g)'>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Breakfast": {{ "food_name": "<Full descriptive meal WITH household units and grams, e.g. '1 Bowl Oats Porridge (180g) with 1 tbsp Chia Seeds (10g) and 1/2 Sliced Apple (60g)'>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Mid-Morning Snack": {{ "food_name": "<Full descriptive meal WITH household units and grams, e.g. '1 Glass Tender Coconut Water (250ml) with 1 Small Bowl Sprouted Moong (120g)'>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Lunch": {{ "food_name": "<Full descriptive meal WITH household units and grams, e.g. '1 Small Bowl Dal Tadka (200g) with 1 Bowl Jeera Rice (200g) and 2 tbsp Mixed Veg Sabzi (150g)'>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Afternoon Snack": {{ "food_name": "<Full descriptive meal WITH household units and grams, e.g. '1 Medium Bowl Roasted Chana (60g) with 1 Medium Banana (100g)'>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Dinner": {{ "food_name": "<Full descriptive meal WITH household units and grams, e.g. '2 Medium Rotis (60g) with 1 Medium Bowl Palak Paneer (150g) and 1 Small Cup Cucumber Raita (100g)'>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Bedtime": {{ "food_name": "<Full descriptive meal WITH household units and grams, e.g. '1 Glass Warm Turmeric Milk (250ml) with Pinch of Cardamom'>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
   }},
   "Day 2": {{
-    "Early-Morning": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Breakfast": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Mid-Morning Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Lunch": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Afternoon Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Dinner": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Bedtime": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
+    "Early-Morning": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Breakfast": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Mid-Morning Snack": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Lunch": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Afternoon Snack": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Dinner": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Bedtime": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
   }},
   "Day 3": {{
-    "Early-Morning": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Breakfast": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Mid-Morning Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Lunch": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Afternoon Snack": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Dinner": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
-    "Bedtime": {{ "food_name": "<str>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
+    "Early-Morning": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Breakfast": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Mid-Morning Snack": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Lunch": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Afternoon Snack": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Dinner": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }},
+    "Bedtime": {{ "food_name": "<Full descriptive meal WITH household units and grams>", "quantity": "<str>", "Gram_Equivalent": <float>, "Calories": <float>, "Protein": <float>, "Carbs": <float>, "Fats": <float>, "Sugar": <float>, "Fiber": <float> }}
   }},
   "suggestions": [
     {{
@@ -197,6 +253,22 @@ Daily Nutrient Targets:
         if not full_plan_json:
             return None, "Failed to generate plan from AI models."
 
+        # Guarantee that food_name ALWAYS contains the full household units and grams
+        for day_k in ["Day 1", "Day 2", "Day 3"]:
+            day_dict = full_plan_json.get(day_k)
+            if isinstance(day_dict, dict):
+                for slot_k, slot_v in day_dict.items():
+                    if isinstance(slot_v, dict):
+                        qty = str(slot_v.get("quantity") or "").strip()
+                        fname = str(slot_v.get("food_name") or "").strip()
+                        has_qty_units = any(u in qty.lower() for u in ["bowl", "katori", "cup", "tbsp", "tsp", "roti", "glass", "g)", "ml)"])
+                        has_fname_units = any(u in fname.lower() for u in ["bowl", "katori", "cup", "tbsp", "tsp", "roti", "glass", "g)", "ml)"])
+                        if has_qty_units and not has_fname_units:
+                            slot_v["food_name"] = qty
+
+        # Normalize generated plan meals to strictly adhere to target calories
+        full_plan_json = _normalize_plan_to_target(full_plan_json, rec_cals)
+
         if "suggestion_flags" not in full_plan_json or not isinstance(full_plan_json["suggestion_flags"], list):
             full_plan_json["suggestion_flags"] = []
 
@@ -210,6 +282,74 @@ Daily Nutrient Targets:
     except Exception as e:
         traceback.print_exc()
         return None, str(e)
+
+
+def calculate_single_meal_nutrition_gemini(food_query: str, meal_context: dict = None) -> dict | None:
+    """
+    Sends an individual edited meal item to Gemini to parse its portions/ingredients
+    and compute its complete, accurate nutritional values (Calories, Macros, Grams, Quantity).
+    Returns a standardized dictionary ready to plug directly into recommendation.meals[day][slot].
+    """
+    if not food_query or not food_query.strip():
+        return None
+
+    clean_query = food_query.strip()
+    if not API_KEY:
+        return None
+
+    prompt = f"""
+You are an expert clinical nutrition analysis AI.
+The dietitian has updated a meal item in the patient's diet plan to: "{clean_query}".
+
+Analyze this food item, identify the exact portion/weight/volume, and calculate the COMPLETE nutritional values for this exact serving.
+If the meal description mentions household measures (like bowls, cups, spoons, rotis) and/or grams, accurately reflect both in the clean `food_name` and `quantity`.
+
+Return a single JSON object with the following fields:
+{{
+  "food_name": "<Clean, descriptive name with household measures and gram equivalents, e.g. '1 Small Bowl Dal Tadka (200g) with 1 Bowl Jeera Rice (200g) and 2 tbsp Veg Sabzi (150g)'>",
+  "quantity": "<Short portion description, e.g. '1 small bowl dal (200g), 1 bowl rice (200g), 2 tbsp sabzi (150g)'>",
+  "Gram_Equivalent": <float, total weight in grams>,
+  "Calories": <float, total calories in kcal>,
+  "Protein": <float, total protein in grams>,
+  "Carbs": <float, total carbohydrates in grams>,
+  "Fats": <float, total fats in grams>,
+  "Sugar": <float, total sugar in grams>,
+  "Fiber": <float, total dietary fiber in grams>
+}}
+
+CRITICAL RULES:
+- Calculate calories and macros accurately based on USDA / standard food database data for the specified ingredients and portions.
+- Every numeric value MUST be an accurate numeric float or int (never null, never string).
+- Return ONLY valid JSON matching the schema above.
+"""
+    models_to_try = ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-flash-latest"]
+    config = genai.types.GenerationConfig(temperature=0.1, response_mime_type="application/json")
+
+    for m_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name=m_name)
+            response = model.generate_content(prompt, generation_config=config)
+            if response and response.text:
+                clean_text = response.text.replace("```json", "").replace("```", "").strip()
+                data = json.loads(clean_text)
+                if isinstance(data, dict) and "Calories" in data:
+                    return {
+                        "food_name": str(data.get("food_name") or clean_query).strip(),
+                        "quantity": str(data.get("quantity") or clean_query).strip(),
+                        "Gram_Equivalent": float(data.get("Gram_Equivalent") or 100.0),
+                        "Calories": round(float(data.get("Calories") or 0.0), 1),
+                        "Protein": round(float(data.get("Protein") or 0.0), 1),
+                        "Carbs": round(float(data.get("Carbs") or 0.0), 1),
+                        "Fats": round(float(data.get("Fats") or 0.0), 1),
+                        "Sugar": round(float(data.get("Sugar") or 0.0), 1),
+                        "Fiber": round(float(data.get("Fiber") or 0.0), 1),
+                    }
+        except Exception as err:
+            print(f"Model {m_name} failed for meal '{clean_query}': {err}")
+            continue
+
+    return None
+
 
 # ==============================================================================
 # SECTION 2: MAIN PUBLIC SERVICE FUNCTION (No changes needed here)

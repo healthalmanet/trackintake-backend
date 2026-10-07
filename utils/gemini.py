@@ -1,7 +1,9 @@
 import dotenv
 from userFood.models import FoodItem, FoodType, MealType, Allergen, LEVEL_CHOICES, normalize_food_name, display_food_name
 from google import genai
+from google.genai import types
 from django.db import transaction
+from django.utils import timezone
 import json
 import traceback
 import time
@@ -304,9 +306,8 @@ def get_nullable_float2(data_dict: dict, key: str) -> float | None:
 
 
 @transaction.atomic
-def food_search_gemini(food_query: str) -> FoodItem:
+def food_search_gemini(food_query: str) -> FoodItem | None:
     """
-    (FINAL CORRECTED VERSION)
     Fetches a COMPLETE nutritional profile by parsing a natural language query.
     Relies on Gemini to identify the quantity, unit, and food from the query string
     (e.g., "1 piece of roti") and calculate the nutrition for that exact serving.
@@ -316,26 +317,33 @@ def food_search_gemini(food_query: str) -> FoodItem:
 
     Returns:
         The created or updated FoodItem model instance containing the nutritional
-        data for the specified portion.
+        data for the specified portion, or None if the query is not a food item.
     """
-    if not food_query:
-        raise ValueError("Food query cannot be empty.")
+    if not food_query or not food_query.strip():
+        return None
+
+    clean_query = food_query.strip()
 
     # --- THE PROMPT IS NOW RE-ENGINEERED TO PARSE THE QUERY ---
     prompt = f"""
-Provide the most accurate and COMPLETE nutritional information for the user's query: "{food_query}".
+Provide the most accurate and COMPLETE nutritional information for the user's query: "{clean_query}".
 
-🔥 CRITICAL INSTRUCTIONS FOR ACCURACY AND PARSING:
-1) Intelligent Parsing: From the user's query ("{food_query}"), identify the quantity, unit, and food composition. The nutrition MUST correspond exactly to this parsed serving.
-2) Source Reliability: Base values ONLY on reputable databases (e.g., USDA).
-3) Preserve Name EXACTLY: In the 'name' field, keep the user’s food name as-is (you may fix capitalization only). 
+🔥 CRITICAL INSTRUCTIONS:
+1) Food Validation: If the query is NOT an edible food, ingredient, dish, beverage, or grocery item (for example, random characters like 'xyzabc123', gibberish, non-food objects), you MUST output:
+{{
+  "food_item": null,
+  "status": "not_found"
+}}
+2) Intelligent Parsing: From the user's query ("{clean_query}"), identify the quantity, unit, and food composition. The nutrition MUST correspond exactly to this parsed serving.
+3) Source Reliability: Base values ONLY on reputable databases (e.g., USDA).
+4) Preserve Name EXACTLY: In the 'name' field, keep the user’s food name as-is (you may fix capitalization only). 
    - Example: "cabbage and bajra roti and peanuts" → name = "Cabbage and Bajra Roti and Peanuts".
    - NEVER replace ingredients or reinterpret the dish (do NOT turn cabbage into peas, do NOT change “roti” to “flatbread,” etc.).
-4) Composition Handling: If the query adds components (e.g., “and peanuts”), retain the base dish and ADD the new component’s nutrients so totals reflect the full composition.
-5) Data Completeness: Provide a value for EVERY key in the JSON structure. If a reliable value cannot be found, use numeric 0. Do not omit keys.
-6) JSON Only: Output a single valid JSON object, no extra text or markdown.
+5) Composition Handling: If the query adds components (e.g., “and peanuts”), retain the base dish and ADD the new component’s nutrients so totals reflect the full composition.
+6) Data Completeness: Provide a value for EVERY key in the JSON structure. If a reliable value cannot be found, use numeric 0. Do not omit keys.
+7) JSON Only: Output a single valid JSON object, no extra text or markdown.
 
-JSON Structure (Reflecting the parsed query):
+JSON Structure (if valid food item):
 {{
   "source_url": "<URL of the data source, if available>",
   "food_item": {{
@@ -375,8 +383,7 @@ JSON Structure (Reflecting the parsed query):
 }}
 """
     try:
-        print(
-            f"🔄 Querying Gemini with natural language query: '{food_query}'...")
+        print(f"🔄 Querying Gemini with natural language query: '{clean_query}'...")
         start_time = time.time()
 
         response = client.models.generate_content(
@@ -390,33 +397,47 @@ JSON Structure (Reflecting the parsed query):
 
         elapsed_time = time.time() - start_time
         logger.warning(
-            f"⏱️ Gemini response time (nutrition): {elapsed_time:.2f}s | food='{food_query}'")
+            f"⏱️ Gemini response time (nutrition): {elapsed_time:.2f}s | food='{clean_query}'")
 
         data = json.loads(response.text)
         item_data = data.get("food_item")
-        if not item_data:
-            raise ValueError(
-                "JSON response from Gemini missing 'food_item' object.")
+
+        # If food_item is None, missing, a non-dict (e.g. string), or indicates not found
+        if not item_data or not isinstance(item_data, dict):
+            print(f"ℹ️ Gemini indicated '{clean_query}' is not a recognized food item.")
+            return None
+
+        status_text = str(data.get("status", "")).lower()
+        if "not found" in status_text or "not_found" in status_text:
+            print(f"ℹ️ Food not found status for '{clean_query}'.")
+            return None
 
         # Use the standardized name from Gemini; this is the key for our database entry.
-        standardized_name = item_data.get('name', food_query).strip()
-        if not standardized_name:  # Ensure the name is not empty
-            raise ValueError("Gemini response provided an empty food name.")
+        standardized_name = str(item_data.get('name') or clean_query).strip()
+        if not standardized_name:
+            return None
 
-        # Build the defaults dictionary. This robustly handles the parsed data from Gemini.
-        # It defaults all numeric fields to 0.0 as a final safeguard.
+        # If all nutrients are missing or N/A
+        cal_val = get_nullable_float2(item_data, 'calories')
+        prot_val = get_nullable_float2(item_data, 'protein')
+        carbs_val = get_nullable_float2(item_data, 'carbs')
+        fats_val = get_nullable_float2(item_data, 'fats')
+        if cal_val is None and prot_val is None and carbs_val is None and fats_val is None:
+            # Check if it was a non-food string
+            print(f"ℹ️ No valid numeric nutrition data returned for '{clean_query}'.")
+            return None
+
         food_item_defaults = {
             'source_url': data.get('source_url'),
-            # These values are now parsed BY Gemini
             'default_quantity': get_nullable_float2(item_data, 'default_quantity') or 1.0,
             'default_unit': item_data.get('default_unit') or 'serving',
             'gram_equivalent': get_nullable_float2(item_data, 'gram_equivalent') or 0.0,
 
             # Nutritional data
-            'calories': get_nullable_float2(item_data, 'calories') or 0.0,
-            'protein': get_nullable_float2(item_data, 'protein') or 0.0,
-            'carbs': get_nullable_float2(item_data, 'carbs') or 0.0,
-            'fats': get_nullable_float2(item_data, 'fats') or 0.0,
+            'calories': cal_val or 0.0,
+            'protein': prot_val or 0.0,
+            'carbs': carbs_val or 0.0,
+            'fats': fats_val or 0.0,
             'sugar': get_nullable_float2(item_data, 'sugar') or 0.0,
             'fiber': get_nullable_float2(item_data, 'fiber') or 0.0,
             'saturated_fat_g': get_nullable_float2(item_data, 'saturated_fat_g') or 0.0,
@@ -440,43 +461,51 @@ JSON Structure (Reflecting the parsed query):
             'fodmap_level': (item_data.get('fodmap_level') or 'Low').title(),
             'spice_level': (item_data.get('spice_level') or 'Low').title(),
             'purine_level': (item_data.get('purine_level') or 'Low').title(),
-            'is_verified': False,  # New items from AI are always unverified
+            'is_verified': False,
         }
 
-        # The `update_or_create` will find a food by its standardized name (e.g., "Roti")
-        # and update it with the nutritional data for the latest query (e.g., "2 piece roti").
-        food_item_obj, created = FoodItem.objects.update_or_create(
-            name__iexact=standardized_name,
-            defaults={'name': standardized_name, **food_item_defaults}
-        )
-        link_food_attributes(food_item_obj)
+        sid = transaction.savepoint()
+        try:
+            food_item_obj, created = FoodItem.objects.update_or_create(
+                name__iexact=standardized_name,
+                defaults={'name': standardized_name, **food_item_defaults}
+            )
 
-        log_prefix = "✅ Created" if created else "✅ Updated"
-        print(f"{log_prefix} food item '{food_item_obj.name}' with data for {food_item_obj.default_quantity} {food_item_obj.default_unit}.")
+            # Safely link food attributes
+            if _link_food_attributes:
+                try:
+                    _link_food_attributes(food_item_obj)
+                except Exception as attr_err:
+                    logger.warning(f"Attribute linking error for {food_item_obj.name}: {attr_err}")
 
-        # Handle M2M relationships (this logic remains correct)
-        food_types = [FoodType.objects.get_or_create(
-            name=name.strip())[0] for name in data.get('food_types', [])]
-        meal_types = [MealType.objects.get_or_create(
-            name=name.strip())[0] for name in data.get('meal_types', [])]
-        allergens = [Allergen.objects.get_or_create(name=name.strip())[0] for name in data.get(
-            'allergens', []) if name.lower().strip() not in ('none', '')]
+            log_prefix = "✅ Created" if created else "✅ Updated"
+            print(f"{log_prefix} food item '{food_item_obj.name}' with data for {food_item_obj.default_quantity} {food_item_obj.default_unit}.")
 
-        food_item_obj.food_types.set(food_types)
-        food_item_obj.meal_types.set(meal_types)
-        food_item_obj.allergens.set(allergens)
+            # Handle M2M relationships
+            food_types = [FoodType.objects.get_or_create(
+                name=name.strip())[0] for name in data.get('food_types', []) if name and name.strip()]
+            meal_types = [MealType.objects.get_or_create(
+                name=name.strip())[0] for name in data.get('meal_types', []) if name and name.strip()]
+            allergens = [Allergen.objects.get_or_create(name=name.strip())[0] for name in data.get(
+                'allergens', []) if name and name.lower().strip() not in ('none', '')]
 
-        return food_item_obj
+            food_item_obj.food_types.set(food_types)
+            food_item_obj.meal_types.set(meal_types)
+            food_item_obj.allergens.set(allergens)
+
+            transaction.savepoint_commit(sid)
+            return food_item_obj
+        except Exception as db_err:
+            transaction.savepoint_rollback(sid)
+            logger.error(f"Database error saving food item '{clean_query}': {db_err}")
+            return None
 
     except json.JSONDecodeError:
-        print(
-            f"❌ Gemini JSON Decode Error for '{food_query}'. Raw text:\n{response.text}")
-        raise ValueError(
-            f"Could not parse nutrition data from AI. Invalid JSON.")
+        print(f"❌ Gemini JSON Decode Error for '{clean_query}'.")
+        return None
     except Exception as e:
-        traceback.print_exc()
-        raise ValueError(
-            f"An API or database error occurred for '{food_query}': {e}")
+        logger.error(f"An error occurred in food_search_gemini for '{clean_query}': {e}")
+        return None
 
 
 # ================================================================
@@ -642,3 +671,274 @@ Each object must use these exact keys:
     except Exception as exc:
         logger.warning(f"suggest_foods_gemini error: {exc}")
         return []
+
+
+def analyze_meal_photo_gemini(image_bytes: bytes, mime_type: str = "image/jpeg", user_context: dict = None) -> dict:
+    """
+    Analyzes a meal or food photo using Gemini 2.5 Flash multimodal vision.
+    - Handles full Indian thalis, platters, or individual items by detecting each distinct dish separately.
+    - Extracts all columns corresponding to the FoodItem database table.
+    - Persists unrecognized items directly into the FoodItem table (with M2M tags).
+    - Returns structured data in both display review and auto-fill log_meal format.
+    """
+    if not image_bytes:
+        raise ValueError("No image bytes provided for analysis.")
+
+    prompt = """
+You are an expert clinical dietitian and computer vision food analyst for the TrackIntake health platform.
+Analyze the meal/food photo provided with extreme precision.
+
+CRITICAL INSTRUCTIONS:
+1. Platter / Thali Management:
+   - If the image contains a full thali, combo meal, buffet plate, or multiple items (e.g. 2 Roti, Dal, Sabzi, Rice, Salad, Curd/Raita, Sweet), you MUST detect and separate EACH DISTINCT FOOD COMPONENT as its own individual item in the "items" array!
+   - Indicate whether the meal is a composite thali/platter in "is_thali" (true/false).
+2. For EACH detected item, provide detailed nutritional attributes corresponding exactly to clinical food catalog specifications:
+   - food_name: Clean, standardized dish name (e.g. "Whole Wheat Roti", "Dal Tadka", "Paneer Butter Masala", "Jeera Rice", "Kachumber Salad").
+   - quantity: Estimated count or portion amount visible on the plate (e.g., 2 for two rotis, 1 for one katori dal).
+   - unit: Best fit standard unit from:
+     ["Gram", "Kilogram", "Milliliter", "Small Bowl", "Bowl", "Big Bowl", "Small Plate", "Plate", "Big Plate", "Small Glass", "Glass", "Large Glass", "Small Cup", "Cup", "Small Piece", "Piece", "Large Piece", "Slice", "Tbsp", "Tsp", "Katori", "Vati", "Karchi", "Muthhi", "Handful", "Thali"]
+   - portion_size: "Small", "Medium", or "Large".
+   - gram_equivalent: Total estimated weight of this item in grams.
+   - Core Macros: calories (kcal), protein (g), carbs (g), fats (g), sugar (g), fiber (g).
+   - Fat Profile: saturated_fat_g (g), trans_fat_g (g).
+   - Glycemic Data: estimated_gi (1-100), glycemic_load.
+   - Minerals: sodium_mg, potassium_mg, iron_mg, calcium_mg, iodine_mcg, zinc_mg, magnesium_mg, selenium_mcg.
+   - Vitamins & Lipids: cholesterol_mg, omega_3_g, vitamin_d_mcg, vitamin_b12_mcg.
+   - Levels: fodmap_level ("Low"|"Medium"|"High"), spice_level ("Low"|"Medium"|"High"), purine_level ("Low"|"Medium"|"High").
+   - Classifications:
+     food_types: Array (e.g. ["Vegetarian", "Vegan", "Non-Vegetarian", or "Egg"]).
+     meal_types: Array (e.g. ["Breakfast", "Lunch", "Dinner", "Snack"]).
+     allergens: Array (e.g. ["Gluten", "Dairy", "Nuts", "Soy", or empty if none).
+   - description: 1-sentence observation of this item.
+   - confidence: Detection confidence between 0.0 and 1.0.
+3. suggested_meal_type: Best guess for the meal slot ("Breakfast", "Lunch", "Dinner", or "Snack").
+4. overall_description: 1-2 friendly sentences describing the whole meal/plate.
+
+Return ONLY a valid JSON object matching this schema:
+{
+  "is_thali": <true|false>,
+  "overall_description": "<string>",
+  "suggested_meal_type": "<Breakfast|Lunch|Dinner|Snack>",
+  "items": [
+    {
+      "food_name": "<string>",
+      "quantity": <float>,
+      "unit": "<string>",
+      "portion_size": "<Small|Medium|Large>",
+      "gram_equivalent": <float>,
+      "calories": <float>,
+      "protein": <float>,
+      "carbs": <float>,
+      "fats": <float>,
+      "sugar": <float>,
+      "fiber": <float>,
+      "saturated_fat_g": <float>,
+      "trans_fat_g": <float>,
+      "estimated_gi": <float>,
+      "glycemic_load": <float>,
+      "sodium_mg": <float>,
+      "potassium_mg": <float>,
+      "iron_mg": <float>,
+      "calcium_mg": <float>,
+      "iodine_mcg": <float>,
+      "zinc_mg": <float>,
+      "magnesium_mg": <float>,
+      "selenium_mcg": <float>,
+      "cholesterol_mg": <float>,
+      "omega_3_g": <float>,
+      "vitamin_d_mcg": <float>,
+      "vitamin_b12_mcg": <float>,
+      "fodmap_level": "<Low|Medium|High>",
+      "spice_level": "<Low|Medium|High>",
+      "purine_level": "<Low|Medium|High>",
+      "food_types": ["<string>"],
+      "meal_types": ["<string>"],
+      "allergens": ["<string>"],
+      "confidence": <float>,
+      "description": "<string>"
+    }
+  ]
+}
+"""
+
+    try:
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg")
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[image_part, prompt],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="application/json"
+            )
+        )
+
+        raw_text = response.text.strip()
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:]
+        data = json.loads(raw_text.strip())
+
+        items = data.get("items", [])
+        is_thali = bool(data.get("is_thali", False))
+        suggested_meal_type = data.get("suggested_meal_type", "Lunch")
+        enriched_items = []
+        log_meal_format = []
+
+        total_cals = 0.0
+        total_protein = 0.0
+        total_carbs = 0.0
+        total_fats = 0.0
+        total_fiber = 0.0
+
+        today_str = timezone.now().strftime("%Y-%m-%d")
+        now_iso = timezone.now().isoformat()
+
+        def safe_float(val, fallback=0.0):
+            if val is None:
+                return fallback
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return fallback
+
+        for item in items:
+            raw_name = (item.get("food_name") or "").strip()
+            if not raw_name:
+                continue
+
+            clean_name = display_food_name(raw_name)
+            key = normalize_food_name(clean_name)
+
+            qty = safe_float(item.get("quantity"), 1.0)
+            unit = item.get("unit") or "Piece"
+            portion_size = item.get("portion_size") or "Medium"
+            gram_eq = safe_float(item.get("gram_equivalent"), 100.0)
+
+            cals = safe_float(item.get("calories"))
+            prot = safe_float(item.get("protein"))
+            carb = safe_float(item.get("carbs"))
+            fat = safe_float(item.get("fats"))
+            fib = safe_float(item.get("fiber"))
+            sug = safe_float(item.get("sugar"))
+
+            total_cals += cals
+            total_protein += prot
+            total_carbs += carb
+            total_fats += fat
+            total_fiber += fib
+
+            # Check if this food item exists in the FoodItem database
+            db_food = FoodItem.objects.filter(name__iexact=clean_name).first()
+            if not db_food:
+                db_food = FoodItem.objects.filter(name__iexact=key).first()
+
+            if not db_food:
+                # Save into FoodItem table with all columns
+                try:
+                    db_food = FoodItem.objects.create(
+                        name=clean_name,
+                        default_quantity=qty,
+                        default_unit=unit,
+                        gram_equivalent=gram_eq,
+                        calories=cals,
+                        protein=prot,
+                        carbs=carb,
+                        fats=fat,
+                        sugar=sug,
+                        fiber=fib,
+                        saturated_fat_g=safe_float(item.get("saturated_fat_g")),
+                        trans_fat_g=safe_float(item.get("trans_fat_g")),
+                        estimated_gi=safe_float(item.get("estimated_gi")),
+                        glycemic_load=safe_float(item.get("glycemic_load")),
+                        sodium_mg=safe_float(item.get("sodium_mg")),
+                        potassium_mg=safe_float(item.get("potassium_mg")),
+                        iron_mg=safe_float(item.get("iron_mg")),
+                        calcium_mg=safe_float(item.get("calcium_mg")),
+                        iodine_mcg=safe_float(item.get("iodine_mcg")),
+                        zinc_mg=safe_float(item.get("zinc_mg")),
+                        magnesium_mg=safe_float(item.get("magnesium_mg")),
+                        selenium_mcg=safe_float(item.get("selenium_mcg")),
+                        cholesterol_mg=safe_float(item.get("cholesterol_mg")),
+                        omega_3_g=safe_float(item.get("omega_3_g")),
+                        vitamin_d_mcg=safe_float(item.get("vitamin_d_mcg")),
+                        vitamin_b12_mcg=safe_float(item.get("vitamin_b12_mcg")),
+                        fodmap_level=(item.get("fodmap_level") or "Low").title(),
+                        spice_level=(item.get("spice_level") or "Low").title(),
+                        purine_level=(item.get("purine_level") or "Low").title(),
+                        is_verified=False,
+                    )
+                    # Many to Many relations
+                    ft_objs = [FoodType.objects.get_or_create(name=n.strip())[0]
+                               for n in item.get("food_types", []) if n.strip()]
+                    mt_objs = [MealType.objects.get_or_create(name=n.strip())[0]
+                               for n in item.get("meal_types", []) if n.strip()]
+                    al_objs = [Allergen.objects.get_or_create(name=n.strip())[0]
+                               for n in item.get("allergens", []) if n.strip().lower() not in ("none", "")]
+
+                    if ft_objs:
+                        db_food.food_types.set(ft_objs)
+                    if mt_objs:
+                        db_food.meal_types.set(mt_objs)
+                    if al_objs:
+                        db_food.allergens.set(al_objs)
+
+                    logger.info("Inserted new FoodItem '%s' (id=%s) from photo capture.", db_food.name, db_food.id)
+                except Exception as db_err:
+                    logger.warning("Could not persist FoodItem '%s': %s", clean_name, db_err)
+
+            enriched_items.append({
+                "food_item_id": db_food.id if db_food else None,
+                "food_name": db_food.name if db_food else clean_name,
+                "quantity": qty,
+                "unit": unit,
+                "portion_size": portion_size,
+                "gram_equivalent": round(gram_eq, 1),
+                "calories": round(cals, 1),
+                "protein": round(prot, 1),
+                "carbs": round(carb, 1),
+                "fats": round(fat, 1),
+                "fiber": round(fib, 1),
+                "sugar": round(sug, 1),
+                "food_type": item.get("food_type") or "Vegetarian",
+                "confidence": round(safe_float(item.get("confidence"), 0.9), 2),
+                "description": item.get("description") or "",
+                "is_thali_component": is_thali,
+            })
+
+            # Auto-fill ready format for logging meal
+            log_meal_format.append({
+                "food_name": db_food.name if db_food else clean_name,
+                "quantity": qty,
+                "unit": unit,
+                "portion_size": portion_size,
+                "meal_type": suggested_meal_type,
+                "remarks": item.get("description") or f"Logged via photo: {clean_name}",
+                "date": today_str,
+                "consumed_at": now_iso,
+                "calories": round(cals, 1),
+                "protein": round(prot, 1),
+                "carbs": round(carb, 1),
+                "fats": round(fat, 1),
+            })
+
+        return {
+            "success": True,
+            "is_thali": is_thali,
+            "overall_description": data.get("overall_description", "Meal analysis complete."),
+            "suggested_meal_type": suggested_meal_type,
+            "items": enriched_items,
+            "log_meal_format": log_meal_format,
+            "totals": {
+                "calories": round(total_cals, 1),
+                "protein": round(total_protein, 1),
+                "carbs": round(total_carbs, 1),
+                "fats": round(total_fats, 1),
+                "fiber": round(total_fiber, 1),
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error in analyze_meal_photo_gemini: {e}", exc_info=True)
+        raise
+
+

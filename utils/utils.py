@@ -127,47 +127,160 @@ def send_sms_notification(to_number, message):
 
 
 
-def get_target_nutrients(user, current_date=None):
+def calculate_target_nutrients(profile_or_user_or_dict, current_date=None) -> dict:
+    """
+    Canonical, unified calculation for BMR, maintenance calories, target calories,
+    macronutrients, and hydration targets.
+    Accepts:
+      - dict (serialized profile data)
+      - UserProfile model instance
+      - User model instance
+    """
+    from datetime import date, datetime
     from userProfile.models import UserProfile
 
     today = current_date or timezone.now().date()
+    if isinstance(today, datetime):
+        today = today.date()
 
-    profile = UserProfile.objects.get(user=user)
-    dob = profile.date_of_birth
-    age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+    # Normalize inputs to profile_dict
+    profile_dict = {}
+    if isinstance(profile_or_user_or_dict, dict):
+        profile_dict = profile_or_user_or_dict
+    elif hasattr(profile_or_user_or_dict, "userprofile"):
+        p = profile_or_user_or_dict.userprofile
+        profile_dict = {
+            "date_of_birth": p.date_of_birth,
+            "weight_kg": p.weight_kg,
+            "height_cm": p.height_cm,
+            "gender": p.gender,
+            "activity_level": p.activity_level,
+            "goal": p.goal,
+            "is_pregnant": getattr(p, "is_pregnant", False),
+            "is_breastfeeding": getattr(p, "is_breastfeeding", False),
+            "current_trimester": getattr(p, "current_trimester", None),
+        }
+    elif isinstance(profile_or_user_or_dict, UserProfile):
+        p = profile_or_user_or_dict
+        profile_dict = {
+            "date_of_birth": p.date_of_birth,
+            "weight_kg": p.weight_kg,
+            "height_cm": p.height_cm,
+            "gender": p.gender,
+            "activity_level": p.activity_level,
+            "goal": p.goal,
+            "is_pregnant": getattr(p, "is_pregnant", False),
+            "is_breastfeeding": getattr(p, "is_breastfeeding", False),
+            "current_trimester": getattr(p, "current_trimester", None),
+        }
+    else:
+        try:
+            p = UserProfile.objects.get(user=profile_or_user_or_dict)
+            profile_dict = {
+                "date_of_birth": p.date_of_birth,
+                "weight_kg": p.weight_kg,
+                "height_cm": p.height_cm,
+                "gender": p.gender,
+                "activity_level": p.activity_level,
+                "goal": p.goal,
+                "is_pregnant": getattr(p, "is_pregnant", False),
+                "is_breastfeeding": getattr(p, "is_breastfeeding", False),
+                "current_trimester": getattr(p, "current_trimester", None),
+            }
+        except Exception:
+            profile_dict = {}
 
-    weight, height = profile.weight_kg, profile.height_cm
-    gender, activity_level, goal = profile.gender, profile.activity_level, profile.goal
+    # Calculate age safely
+    dob_raw = profile_dict.get("date_of_birth")
+    age = 30
+    if dob_raw:
+        if isinstance(dob_raw, (date, datetime)):
+            dob = dob_raw if isinstance(dob_raw, date) else dob_raw.date()
+            try:
+                age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+            except Exception:
+                age = 30
+        elif isinstance(dob_raw, str) and dob_raw.strip():
+            try:
+                dob = datetime.strptime(dob_raw.strip(), '%Y-%m-%d').date()
+                age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+            except Exception:
+                age = 30
 
-    # BMR Calculation (Mifflin-St Jeor)
+    try:
+        weight = float(profile_dict.get("weight_kg") or 65.0)
+    except (ValueError, TypeError):
+        weight = 65.0
+
+    try:
+        height = float(profile_dict.get("height_cm") or 170.0)
+    except (ValueError, TypeError):
+        height = 170.0
+
+    gender = str(profile_dict.get("gender") or "male").lower().strip()
+    activity_level = str(profile_dict.get("activity_level") or "Sedentary")
+    goal = str(profile_dict.get("goal") or "Maintain Weight")
+
+    is_pregnant = bool(profile_dict.get("is_pregnant", False))
+    is_breastfeeding = bool(profile_dict.get("is_breastfeeding", False))
+    current_trimester = profile_dict.get("current_trimester")
+
+    # 1. BMR Calculation (Mifflin-St Jeor formula)
     bmr = 10 * weight + 6.25 * height - 5 * age + (5 if gender == "male" else -161)
 
-    activity_multipliers = {
-        "sedentary": 1.2,
-        "light": 1.3,
-        "lightly_active": 1.3,
-        "moderate": 1.45,
-        "active": 1.6,
-        "very_active": 1.75
-    }
-    maintenance_calories = bmr * activity_multipliers.get((activity_level or '').lower(), 1.2)
+    # 2. Activity Multipliers (Standard Mifflin-St Jeor / Harris-Benedict)
+    # Handles "Moderately Active", "moderately_active", "moderate", etc.
+    act_clean = activity_level.lower().replace("_", " ").strip()
+    if "extra" in act_clean:
+        mult = 1.9
+        water_bonus = 1200
+    elif "very" in act_clean:
+        mult = 1.725
+        water_bonus = 1000
+    elif "mod" in act_clean:
+        mult = 1.55
+        water_bonus = 500
+    elif "light" in act_clean:
+        mult = 1.375
+        water_bonus = 250
+    else:  # Sedentary or default
+        mult = 1.2
+        water_bonus = 0
 
-    # Goal adjustment
-    goal_str = (goal or '').lower()
-    if goal_str == "gain weight":
+    maintenance_calories = bmr * mult
+
+    # 3. Goal Adjustment
+    goal_clean = goal.lower()
+    if "gain" in goal_clean:
+        # Standard +15% calorie surplus for lean gain
         recommended_calories = maintenance_calories * 1.15
-        target_weight = weight + 5
-    elif goal_str == "lose weight":
-        recommended_calories = maintenance_calories * 0.8
-        target_weight = weight - 5
+        target_weight = weight + 5.0
+    elif "lose" in goal_clean:
+        # Standard -20% calorie deficit for healthy fat loss
+        recommended_calories = maintenance_calories * 0.80
+        target_weight = weight - 5.0
     else:
         recommended_calories = maintenance_calories
         target_weight = weight
 
+    # 4. Pregnancy & Lactation Adjustments (ACOG / Clinical Standards)
+    is_female = gender != "male"
+    if is_female:
+        if is_pregnant:
+            if current_trimester == 2:
+                recommended_calories += 340
+            elif current_trimester == 3:
+                recommended_calories += 450
+        elif is_breastfeeding:
+            recommended_calories += 500
+
     recommended_calories = round(recommended_calories)
 
-    # Macronutrient targets
+    # 5. Macronutrients Breakdown
     protein_g = round(weight * 1.8)
+    if is_female and (is_pregnant or is_breastfeeding):
+        protein_g = max(protein_g, round(weight * 1.1) + 25)
+
     fats_g = round(weight * 0.8)
     protein_calories = protein_g * 4
     fats_calories = fats_g * 9
@@ -176,34 +289,40 @@ def get_target_nutrients(user, current_date=None):
     sugar_g = round((recommended_calories * 0.1) / 4)
     fiber_g = round((recommended_calories / 1000) * 14)
 
-    # Water intake
+    # 6. Hydration Target
     base_water_ml = weight * 35
-    activity_water_bonus = {
-        "sedentary": 0,
-        "light": 250,
-        "lightly_active": 250,
-        "moderate": 500,
-        "active": 750,
-        "very_active": 1000
+    recommended_water_ml = round(base_water_ml + water_bonus)
+
+    macronutrients = {
+        "protein_g": protein_g,
+        "carbs_g": carbs_g,
+        "fats_g": fats_g,
+        "sugar_g": sugar_g,
+        "fiber_g": fiber_g,
     }
-    recommended_water_ml = base_water_ml + activity_water_bonus.get(activity_level.lower(), 0)
 
     return {
         "bmr": round(bmr),
         "maintenance_calories": round(maintenance_calories),
         "recommended_calories": recommended_calories,
-        "macronutrients": {
-            "protein_g": protein_g,
-            "carbs_g": carbs_g,
-            "fats_g": fats_g,
-            "sugar_g": sugar_g,
-            "fiber_g": fiber_g
-        },
-        "water": {"recommended_ml": round(recommended_water_ml)},
+        "protein_g": protein_g,
+        "carbs_g": carbs_g,
+        "fats_g": fats_g,
+        "sugar_g": sugar_g,
+        "fiber_g": fiber_g,
+        "macronutrients": macronutrients,
+        "water": {"recommended_ml": recommended_water_ml},
         "weight_target": {
             "current_weight_kg": round(weight, 1),
             "target_weight_kg": round(target_weight, 1),
-            "goal": goal
+            "goal": goal,
         },
-        "activity_level": activity_level
+        "activity_level": activity_level,
     }
+
+
+def get_target_nutrients(user, current_date=None):
+    """
+    Public convenience accessor for user target nutrients, maintaining backward compatibility.
+    """
+    return calculate_target_nutrients(user, current_date=current_date)

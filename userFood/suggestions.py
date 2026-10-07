@@ -1211,6 +1211,9 @@ def _get_plan_candidates(user):
     except Exception:
         days_elapsed = 0
 
+    if days_elapsed < 0:
+        return [], None
+
     plan_keys = list(plan.meals.keys())
     day_key = (
         f"Day {days_elapsed + 1}"

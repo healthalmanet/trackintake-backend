@@ -44,12 +44,25 @@ class DietPlanView(APIView):
                     'plan_id': pending_plan.id
                 }, status=status.HTTP_202_ACCEPTED)
 
-            # 2️⃣ Check for valid 15-day approved plan
-            active_plan = DietRecommendation.objects.filter(
-                user=user, status='approved',
-                for_week_starting__lte=today,
-                for_week_starting__gte=today - timedelta(days=14)
-            ).order_by('-for_week_starting').first()
+            # 2️⃣ Check all approved plans for this user, newest created first
+            approved_plans = list(
+                DietRecommendation.objects.filter(user=user, status='approved').order_by('-created_at')
+            )
+
+            active_plan = None
+
+            # A. Check if any approved plan actively covers TODAY (start_date <= today <= end_date)
+            for p in approved_plans:
+                day_count = len([k for k in p.meals.keys() if k.lower().startswith('day')]) if isinstance(p.meals, dict) else 7
+                plan_end = p.for_week_starting + timedelta(days=max(day_count - 1, 0))
+                if p.for_week_starting <= today <= plan_end:
+                    active_plan = p
+                    break
+
+            # B. If no plan actively covers today, prioritize the most recently created approved plan
+            # (e.g. newly created plan scheduled to start soon or current active cycle)
+            if not active_plan and approved_plans:
+                active_plan = approved_plans[0]
 
             if active_plan:
                 serializer = DietRecommendationSerializer(active_plan)
@@ -147,9 +160,20 @@ class DietPlanView(APIView):
 #
 #            plan_json = convert_to_builtin_type(plan_json)
 
+            start_date_str = request.data.get("start_date") or request.data.get("for_week_starting")
+            today = timezone.localdate()
+            if start_date_str:
+                from django.utils.dateparse import parse_date
+                parsed_date = parse_date(str(start_date_str).strip())
+                if parsed_date and parsed_date < today:
+                    return Response({"error": "Start date cannot be in the past."}, status=status.HTTP_400_BAD_REQUEST)
+                plan_start_date = parsed_date if parsed_date else today
+            else:
+                plan_start_date = today
+
             new_recommendation = DietRecommendation.objects.create(
                 user=user,
-                for_week_starting=now().date(),
+                for_week_starting=plan_start_date,
                 meals=plan_json,
                 original_ai_plan=plan_json,
                 user_profile_snapshot=user_vector_list,

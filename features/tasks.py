@@ -154,6 +154,15 @@ def send_message_notification(sender_or_message, receiver=None, text=None):
             payload
         )
         logger.info(f"📲 WebSocket sent to receiver user_{receiver.id}")
+        if sender and sender.id != receiver.id:
+            try:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{sender.id}",
+                    payload
+                )
+                logger.info(f"📲 WebSocket sent to sender user_{sender.id}")
+            except Exception as se:
+                logger.error(f"❌ WebSocket sender sync failed: {se}")
     except Exception as e:
         logger.error(f"❌ WebSocket failed: {e}")
 
