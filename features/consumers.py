@@ -21,15 +21,15 @@ class ReminderConsumer(AsyncWebsocketConsumer):
                 await self.close()
         else:
             logger.warning("❌ Reminder connection rejected: Unauthenticated")
-            await self.close()
+            await self.close(code=4001)
 
     async def disconnect(self, close_code):
-        if self.group_name:
+        if self.group_name and getattr(self, "channel_layer", None):
             try:
-                # Use a timeout for group_discard to prevent hanging on shutdown
-                await asyncio.wait_for(
-                    self.channel_layer.group_discard(self.group_name, self.channel_name),
-                    timeout=5.0
+                # Discard group in a background task so ASGI consumer exits immediately
+                # and Daphne never hangs or kills the application instance.
+                asyncio.create_task(
+                    self.channel_layer.group_discard(self.group_name, self.channel_name)
                 )
                 logger.info(f"🔌 Reminder disconnected: {self.group_name} (Code: {close_code})")
             except Exception as e:
@@ -88,14 +88,15 @@ class MessageConsumer(AsyncWebsocketConsumer):
                 await self.close()
         else:
             logger.warning("❌ Message connection rejected: Unauthenticated")
-            await self.close()
+            await self.close(code=4001)
 
     async def disconnect(self, close_code):
-        if self.group_name:
+        if self.group_name and getattr(self, "channel_layer", None):
             try:
-                await asyncio.wait_for(
-                    self.channel_layer.group_discard(self.group_name, self.channel_name),
-                    timeout=5.0
+                # Discard group in a background task so ASGI consumer exits immediately
+                # and Daphne never hangs or kills the application instance.
+                asyncio.create_task(
+                    self.channel_layer.group_discard(self.group_name, self.channel_name)
                 )
                 logger.info(f"🔌 Message disconnected: {self.group_name} (Code: {close_code})")
             except Exception as e:
