@@ -200,8 +200,6 @@ if _REDIS_URL.startswith("rediss://"):
                     {
                         "address": _REDIS_URL,
                         "ssl_cert_reqs": None,
-                        "socket_timeout": 5.0,
-                        "socket_connect_timeout": 5.0,
                     }
                 ],
                 "capacity": 1500,  # Prevent message backlog from eating memory
@@ -214,13 +212,7 @@ else:
         "default": {
             "BACKEND": "channels_redis.core.RedisChannelLayer",
             "CONFIG": {
-                "hosts": [
-                    {
-                        "address": _REDIS_URL,
-                        "socket_timeout": 5.0,
-                        "socket_connect_timeout": 5.0,
-                    }
-                ],
+                "hosts": [_REDIS_URL],
                 "capacity": 1500,
                 "expiry": 60,
             },
