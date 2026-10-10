@@ -147,6 +147,7 @@ class Payment(models.Model):
     )
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT)
     amount = models.PositiveIntegerField()
+    payment_type = models.CharField(max_length=50, default="subscription", blank=True, null=True)
 
     razorpay_order_id = models.CharField(max_length=100, unique=True)
     razorpay_payment_id = models.CharField(max_length=100, blank=True, null=True)

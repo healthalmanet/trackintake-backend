@@ -601,6 +601,7 @@ class PayConsultationFeeView(APIView):
             user=request.user,
             plan=plan_record,
             amount=int_amount,
+            payment_type="consultation_fee",
             razorpay_order_id=order["id"],
             status="pending",
         )
@@ -627,10 +628,21 @@ class BillingHistoryView(APIView):
         )
         data = []
         for p in payments:
+            ptype = getattr(p, "payment_type", None)
+            is_consult = (ptype == "consultation_fee") or (p.plan and p.amount < p.plan.price)
+
+            if is_consult:
+                plan_name = "Single Consultation Fee"
+                plan_type = "consultation"
+            else:
+                plan_name = p.plan.name if p.plan else "N/A"
+                plan_type = p.plan.plan_type if p.plan else "patient"
+
             data.append({
                 "id": p.id,
-                "plan_name": p.plan.name if p.plan else "N/A",
-                "plan_type": p.plan.plan_type if p.plan else "patient",
+                "plan_name": plan_name,
+                "plan_type": plan_type,
+                "payment_type": ptype or ("consultation_fee" if is_consult else "subscription"),
                 "amount": p.amount,
                 "status": p.status,
                 "razorpay_order_id": p.razorpay_order_id,

@@ -100,6 +100,7 @@ from .views import (
     MyInHouseNutritionistView,
     ExpertNutritionistListView,
     SubmitFeedbackView,
+    MarkAppointmentPaidView,
 )
 
 urlpatterns = [
@@ -121,10 +122,12 @@ urlpatterns = [
     path("me/in-house-nutritionist/", MyInHouseNutritionistView.as_view()),
     path("expert-nutritionists/", ExpertNutritionistListView.as_view(), name="expert-nutritionists"),
 
-    # Actions: Cancel & Reschedule
+    # Actions: Cancel, Reschedule & Mark Paid
     path("appointments/<int:pk>/cancel/", CancelAppointmentView.as_view(), name="cancel-appointment"),
     path("<int:pk>/cancel/", CancelAppointmentView.as_view()),
     path("appointments/<int:pk>/reschedule/", RescheduleAppointmentView.as_view(), name="reschedule-appointment"),
     path("<int:pk>/reschedule/", RescheduleAppointmentView.as_view()),
+    path("<int:pk>/mark-paid/", MarkAppointmentPaidView.as_view(), name="mark-appointment-paid"),
+    path("appointments/<int:pk>/mark-paid/", MarkAppointmentPaidView.as_view()),
     path("<int:appointment_id>/feedback/", SubmitFeedbackView.as_view(), name="submit-feedback"),
 ]

@@ -331,9 +331,9 @@ class ExpertNutritionistListView(APIView):
                 "languages_spoken": sanitize_json_string_list(profile.languages_spoken) if profile else [],
                 "is_online_available": profile.is_online_available if profile else True,
                 "is_offline_available": profile.is_offline_available if profile else False,
-                "online_price": float(profile.online_price) if profile and profile.online_price is not None else 0.0,
-                "offline_price": float(profile.offline_price) if profile and profile.offline_price is not None else 0.0,
-                "offline_payment_required": profile.offline_payment_required if profile else True,
+                "online_price": float(profile.online_price or profile.pending_online_price or 0.0) if profile else 0.0,
+                "offline_price": float(profile.offline_price or profile.pending_offline_price or 0.0) if profile else 0.0,
+                "offline_payment_required": profile.pending_offline_payment_required if (profile and profile.pending_offline_payment_required is not None) else (profile.offline_payment_required if profile else True),
                 "offline_location": profile.offline_location if profile else "",
             })
         return Response(data)
@@ -370,9 +370,9 @@ class MyInHouseNutritionistView(APIView):
             "languages_spoken": sanitize_json_string_list(profile.languages_spoken) if profile else [],
             "is_online_available": profile.is_online_available if profile else True,
             "is_offline_available": profile.is_offline_available if profile else False,
-            "online_price": float(profile.online_price) if profile and profile.online_price is not None else 0.0,
-            "offline_price": float(profile.offline_price) if profile and profile.offline_price is not None else 0.0,
-            "offline_payment_required": profile.offline_payment_required if profile else True,
+            "online_price": float(profile.online_price or profile.pending_online_price or 0.0) if profile else 0.0,
+            "offline_price": float(profile.offline_price or profile.pending_offline_price or 0.0) if profile else 0.0,
+            "offline_payment_required": profile.pending_offline_payment_required if (profile and profile.pending_offline_payment_required is not None) else (profile.offline_payment_required if profile else True),
             "offline_location": profile.offline_location if profile else "",
         })
 
@@ -880,7 +880,7 @@ class NutritionistPayoutsView(APIView):
                     price = online_price if appt.appointment_type == "VIRTUAL" else offline_price
                     if price > 0:
                         appt.fee_amount = price
-                        if appt.appointment_type == "VIRTUAL" or profile.offline_payment_required:
+                        if appt.appointment_type == "VIRTUAL":
                             if appt.payment_status in ["UNPAID", ""]:
                                 appt.payment_status = "PAID"
                             if appt.payout_status in ["NOT_APPLICABLE", ""]:
@@ -1192,3 +1192,42 @@ class PatientAppointmentHistoryView(APIView):
         ).order_by("-slot__date", "-slot__start_time")
 
         return Response(AppointmentListSerializer(appointments, many=True).data)
+
+
+# ─────────────────────────────────────────────
+# MARK IN-PERSON APPOINTMENT AS PAID AT CLINIC
+# ─────────────────────────────────────────────
+class MarkAppointmentPaidView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            appointment = Appointment.objects.select_related(
+                "nutritionist", "patient"
+            ).get(id=pk)
+        except Appointment.DoesNotExist:
+            return Response({"detail": "Appointment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Only attending nutritionist or staff can mark as paid at clinic
+        if request.user != appointment.nutritionist and not request.user.is_staff:
+            return Response(
+                {"detail": "Only the attending nutritionist can mark payment received at clinic."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if appointment.payment_status == "PAID":
+            return Response({
+                "detail": "Appointment is already marked as paid.",
+                "payment_status": "PAID",
+                "appointment": AppointmentDetailSerializer(appointment, context={"request": request}).data
+            }, status=status.HTTP_200_OK)
+
+        appointment.payment_status = "PAID"
+        appointment.payout_status = "NOT_APPLICABLE"  # Cash collected directly by nutritionist
+        appointment.save(update_fields=["payment_status", "payout_status"])
+
+        return Response({
+            "detail": f"Payment of ₹{appointment.fee_amount} marked as collected at clinic.",
+            "payment_status": "PAID",
+            "appointment": AppointmentDetailSerializer(appointment, context={"request": request}).data
+        }, status=status.HTTP_200_OK)

@@ -60,7 +60,6 @@ urlpatterns = [
     # ===================================================================
     path('nutritionist/patients/<int:patient_id>/lab-reports/', PatientLabReportListCreateView.as_view(), name='patient-lab-report-list-create'),
     path('nutritionist/patients/<int:patient_id>/lab-reports/<int:pk>/', PatientLabReportDetailView.as_view(), name='patient-lab-report-detail'),
-    path('nutritionist/patients/<int:patient_id>/lab-reports/', PatientLabReportsView.as_view()),
 
     # ===================================================================
     # Nutritionist - Diet Plan Management

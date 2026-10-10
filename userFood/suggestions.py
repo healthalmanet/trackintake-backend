@@ -1201,6 +1201,7 @@ def _get_plan_candidates(user):
     plan = (
         DietRecommendation.objects
         .filter(user=user, status="approved", is_deleted=False)
+        .exclude(status="disabled")
         .order_by("-created_at").first()
     )
     if not plan or not plan.meals:

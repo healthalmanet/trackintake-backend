@@ -34,8 +34,8 @@ class DietPlanView(APIView):
         try:
             # 1️⃣ Check for pending plan
             pending_plan = DietRecommendation.objects.filter(
-                user=user, status='pending'
-            ).order_by('-created_at').first()
+                user=user, status='pending', is_deleted=False
+            ).exclude(status='disabled').order_by('-created_at').first()
 
             if pending_plan:
                 return Response({
@@ -46,7 +46,7 @@ class DietPlanView(APIView):
 
             # 2️⃣ Check all approved plans for this user, newest created first
             approved_plans = list(
-                DietRecommendation.objects.filter(user=user, status='approved').order_by('-created_at')
+                DietRecommendation.objects.filter(user=user, status='approved', is_deleted=False).exclude(status='disabled').order_by('-created_at')
             )
 
             active_plan = None
@@ -396,7 +396,7 @@ class PreviousDietPlansView(APIView):
         offset = int(request.query_params.get('offset', 0))
 
         try:
-            queryset = DietRecommendation.objects.filter(user=user)
+            queryset = DietRecommendation.objects.filter(user=user, is_deleted=False).exclude(status='disabled')
 
             if status_filter in ['approved', 'rejected']:
                 queryset = queryset.filter(status=status_filter)

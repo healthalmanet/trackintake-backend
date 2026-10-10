@@ -226,9 +226,20 @@ class LabReportSerializer(serializers.ModelSerializer):
             mutable_data.pop('report_file', None)
 
         # Sanitize all numeric fields
+        int_fields = ['blood_pressure_systolic', 'blood_pressure_diastolic']
+        for int_f in int_fields:
+            if int_f in mutable_data:
+                val = mutable_data[int_f]
+                if val in ['', 'null', 'None', 'undefined', None]:
+                    mutable_data.pop(int_f, None)
+                else:
+                    try:
+                        mutable_data[int_f] = int(round(float(val)))
+                    except (ValueError, TypeError):
+                        mutable_data.pop(int_f, None)
+
         num_fields = [
             'weight_kg', 'height_cm', 'waist_circumference_cm',
-            'blood_pressure_systolic', 'blood_pressure_diastolic',
             'fasting_blood_sugar', 'postprandial_sugar', 'hba1c',
             'ldl_cholesterol', 'hdl_cholesterol', 'triglycerides', 'crp', 'esr',
             'uric_acid', 'creatinine', 'urea', 'alt', 'ast', 'vitamin_d3',

@@ -182,3 +182,76 @@ class AppointmentBookingTests(TestCase):
         }
         response = self.client.post("/api/appointments/book/", payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @patch("appointments.serializers.send_booking_confirmation_emails")
+    def test_in_person_pay_at_clinic_when_offline_payment_not_required(self, mock_email):
+        """When nutritionist allows Pay at Clinic (offline_payment_required=False), booking is UNPAID."""
+        self.nutri_profile.offline_price = 500.00
+        self.nutri_profile.offline_payment_required = False
+        self.nutri_profile.pending_offline_payment_required = None
+        self.nutri_profile.save()
+
+        self.client.force_authenticate(user=self.patient)
+        payload = {
+            "slot_id": self.in_person_slot.id,
+            "appointment_category": "IN_HOUSE",
+            "appointment_type": "IN_PERSON",
+        }
+        response = self.client.post("/api/appointments/book/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        appt = Appointment.objects.get(slot=self.in_person_slot)
+        self.assertEqual(appt.payment_status, "UNPAID")
+        self.assertEqual(appt.payout_status, "NOT_APPLICABLE")
+        self.assertEqual(float(appt.fee_amount), 500.00)
+
+    def test_in_person_payment_required_blocks_free_booking(self):
+        """When offline_payment_required=True, booking without payment is rejected with consultation_required."""
+        self.nutri_profile.offline_price = 600.00
+        self.nutri_profile.offline_payment_required = True
+        self.nutri_profile.pending_offline_payment_required = None
+        self.nutri_profile.save()
+
+        self.client.force_authenticate(user=self.patient)
+        payload = {
+            "slot_id": self.in_person_slot.id,
+            "appointment_category": "IN_HOUSE",
+            "appointment_type": "IN_PERSON",
+        }
+        response = self.client.post("/api/appointments/book/", payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(response.data.get("consultation_required"))
+        self.assertEqual(float(response.data.get("price")), 600.00)
+        self.assertTrue(response.data.get("offline_payment_required"))
+
+    @patch("appointments.serializers.send_booking_confirmation_emails")
+    def test_nutritionist_can_mark_appointment_paid_at_clinic(self, mock_email):
+        """Nutritionist can mark an UNPAID in-clinic appointment as PAID once cash is collected."""
+        self.nutri_profile.offline_price = 350.00
+        self.nutri_profile.offline_payment_required = False
+        self.nutri_profile.save()
+
+        self.client.force_authenticate(user=self.patient)
+        payload = {
+            "slot_id": self.in_person_slot.id,
+            "appointment_category": "IN_HOUSE",
+            "appointment_type": "IN_PERSON",
+        }
+        res = self.client.post("/api/appointments/book/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        appt_id = res.data["id"]
+
+        # Patient cannot mark as paid
+        self.client.force_authenticate(user=self.patient)
+        res_fail = self.client.post(f"/api/appointments/{appt_id}/mark-paid/")
+        self.assertEqual(res_fail.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Attending nutritionist marks as paid
+        self.client.force_authenticate(user=self.nutritionist)
+        res_ok = self.client.post(f"/api/appointments/{appt_id}/mark-paid/")
+        self.assertEqual(res_ok.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_ok.data["payment_status"], "PAID")
+
+        appt = Appointment.objects.get(id=appt_id)
+        self.assertEqual(appt.payment_status, "PAID")
+        self.assertEqual(appt.payout_status, "NOT_APPLICABLE")
