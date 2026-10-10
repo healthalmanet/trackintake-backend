@@ -436,15 +436,15 @@ class RegisterSerializer(serializers.ModelSerializer):
 
             # Pricing requires admin approval upon registration if price > 0
             has_price_request = (online_price and float(online_price) > 0) or (offline_price and float(offline_price) > 0)
+            nutri_profile.offline_payment_required = offline_payment_required
+            nutri_profile.pending_offline_payment_required = offline_payment_required
             if has_price_request:
                 nutri_profile.pending_online_price = online_price
                 nutri_profile.pending_offline_price = offline_price
-                nutri_profile.pending_offline_payment_required = offline_payment_required
                 nutri_profile.price_approval_status = "pending"
             else:
                 nutri_profile.online_price = online_price
                 nutri_profile.offline_price = offline_price
-                nutri_profile.offline_payment_required = offline_payment_required
                 nutri_profile.price_approval_status = "approved"
 
             nutri_profile.save()

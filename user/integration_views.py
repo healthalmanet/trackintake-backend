@@ -507,7 +507,7 @@ class IntegrationDietPlanView(APIView):
 
 
         # Fetch the latest recommendation
-        plan = DietRecommendation.objects.filter(user=request.user).order_by("-created_at").first()
+        plan = DietRecommendation.objects.filter(user=request.user, is_deleted=False).exclude(status='disabled').order_by("-created_at").first()
         if not plan:
             return Response({
                 "status_code": "NO_PLAN_FOUND",

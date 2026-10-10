@@ -46,15 +46,25 @@ class AvailabilitySlotSerializer(serializers.ModelSerializer):
 
     def get_online_price(self, obj):
         profile = self._get_profile(obj)
-        return float(profile.online_price) if profile and profile.online_price is not None else 0.0
+        if not profile:
+            return 0.0
+        val = profile.online_price or profile.pending_online_price or 0.0
+        return float(val)
 
     def get_offline_price(self, obj):
         profile = self._get_profile(obj)
-        return float(profile.offline_price) if profile and profile.offline_price is not None else 0.0
+        if not profile:
+            return 0.0
+        val = profile.offline_price or profile.pending_offline_price or 0.0
+        return float(val)
 
     def get_offline_payment_required(self, obj):
         profile = self._get_profile(obj)
-        return profile.offline_payment_required if profile else True
+        if not profile:
+            return True
+        if profile.pending_offline_payment_required is not None:
+            return profile.pending_offline_payment_required
+        return profile.offline_payment_required
 
     def get_offline_location(self, obj):
         profile = self._get_profile(obj)
@@ -159,11 +169,17 @@ class AppointmentCreateSerializer(serializers.Serializer):
         real_price = 0.0
         if nutri_profile:
             if appointment_type == "IN_PERSON":
-                real_price = float(nutri_profile.offline_price or 0.0)
+                real_price = float(nutri_profile.offline_price or nutri_profile.pending_offline_price or 0.0)
             else:
-                real_price = float(nutri_profile.online_price or 0.0)
+                real_price = float(nutri_profile.online_price or nutri_profile.pending_online_price or 0.0)
 
-        offline_payment_required = getattr(nutri_profile, "offline_payment_required", True) if nutri_profile else True
+        # Determine offline payment policy: if pending setting exists, use that; otherwise profile setting (default True)
+        offline_payment_required = True
+        if nutri_profile:
+            if nutri_profile.pending_offline_payment_required is not None:
+                offline_payment_required = nutri_profile.pending_offline_payment_required
+            else:
+                offline_payment_required = getattr(nutri_profile, "offline_payment_required", True)
 
         # Check if offline payment is allowed later (at clinic / cash)
         is_offline_pay_later = (appointment_type == "IN_PERSON" and not offline_payment_required)
@@ -252,13 +268,13 @@ class AppointmentCreateSerializer(serializers.Serializer):
             fee_amount = real_price
             payout_amount = real_price
 
-            if is_offline_pay_later:
+            if is_offline_pay_later and not consumed_quota:
                 # In-Person where patient pays cash/card directly at the clinic to nutritionist
                 payment_status = "UNPAID"
                 payout_status = "NOT_APPLICABLE"
                 payout_amount = 0.00
             else:
-                # All platform payments (virtual consultations, or clinic visits requiring online payment)
+                # All platform payments (virtual consultations, or clinic visits requiring online payment, or plan quota consumed)
                 # Revenue is collected by platform, so Admin owes payout to the nutritionist
                 payment_status = "PAID"
                 payout_status = "PENDING"
@@ -404,7 +420,11 @@ class NutritionistSlotSerializer(serializers.ModelSerializer):
 
     def get_offline_payment_required(self, obj):
         profile = self._get_profile(obj)
-        return profile.offline_payment_required if profile else True
+        if not profile:
+            return True
+        if profile.pending_offline_payment_required is not None:
+            return profile.pending_offline_payment_required
+        return profile.offline_payment_required
 
     def get_price(self, obj):
         profile = self._get_profile(obj)
@@ -526,7 +546,11 @@ class AppointmentListSerializer(serializers.ModelSerializer):
 
     def get_offline_payment_required(self, obj):
         profile = getattr(obj.nutritionist, "nutritionist_profile", None)
-        return profile.offline_payment_required if profile else True
+        if not profile:
+            return True
+        if profile.pending_offline_payment_required is not None:
+            return profile.pending_offline_payment_required
+        return profile.offline_payment_required
 
     def _get_start_datetime(self, obj):
         d = obj.slot_date or (obj.slot.date if obj.slot else None)
@@ -645,7 +669,11 @@ class AppointmentDetailSerializer(serializers.ModelSerializer):
 
     def get_offline_payment_required(self, obj):
         profile = getattr(obj.nutritionist, "nutritionist_profile", None)
-        return profile.offline_payment_required if profile else True
+        if not profile:
+            return True
+        if profile.pending_offline_payment_required is not None:
+            return profile.pending_offline_payment_required
+        return profile.offline_payment_required
 
     def _get_start_datetime(self, obj):
         d = obj.slot_date or (obj.slot.date if obj.slot else None)

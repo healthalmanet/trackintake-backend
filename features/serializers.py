@@ -86,9 +86,9 @@ class MessageSerializer(serializers.ModelSerializer):
     receiver_email = serializers.EmailField(source='receiver.email', read_only=True)
 
     text = serializers.CharField(
-        max_length=2000,
+        max_length=10000,
         error_messages={
-            'max_length': 'Message cannot exceed 2,000 characters. Please shorten your message.',
+            'max_length': 'Message cannot exceed 10,000 characters. Please shorten your message.',
             'blank': 'Message cannot be empty.'
         }
     )

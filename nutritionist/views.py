@@ -15,6 +15,7 @@ from django.http import HttpResponse
 from rest_framework import filters, generics, permissions, serializers, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -32,7 +33,7 @@ from diet.serializers import DietRecommendationSerializer
 from diet.tasks import generate_ai_diet_task
 
 from userProfile.models import LabReport, UserProfile
-from userProfile.serializers import LabReportSerializer, UserProfileSerializer
+from userProfile.serializers import UserProfileSerializer
 
 from userFood.models import FoodItem, UserMeal
 
@@ -60,6 +61,7 @@ from .serializers import (
     PatientProfileSerializer1,
     UserMealSerializer1,
     DietRecommendationWithPatientSerializer1,
+    LabReportSerializer,
 )
 from .bulk_upload import generate_patient_template_excel, process_patient_bulk_upload
 
@@ -379,20 +381,24 @@ class PatientProfileDetailView(APIView):
 
         try:
             user_profile = UserProfile.objects.select_related('user').get(user_id=patient_id)
-            profile_serializer = self.PatientProfileSerializer1(user_profile)
-
-            lab_report_data = None
-            latest_lab_report = LabReport.objects.filter(user_id=patient_id).order_by('-report_date').first()
-            if latest_lab_report:
-                lab_report_data = LabReportSerializer(latest_lab_report).data
-
-            return Response({
-                'profile': profile_serializer.data,
-                'latest_lab_report': lab_report_data
-            }, status=status.HTTP_200_OK)
-
         except UserProfile.DoesNotExist:
-            return Response({'error': 'Patient profile not found.'}, status=status.HTTP_404_NOT_FOUND)
+            try:
+                patient_user = User.objects.get(pk=patient_id)
+                user_profile, _ = UserProfile.objects.get_or_create(user=patient_user)
+            except User.DoesNotExist:
+                return Response({'error': 'Patient profile not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        profile_serializer = self.PatientProfileSerializer1(user_profile)
+
+        lab_report_data = None
+        latest_lab_report = LabReport.objects.filter(user_id=patient_id).order_by('-report_date').first()
+        if latest_lab_report:
+            lab_report_data = LabReportSerializer(latest_lab_report).data
+
+        return Response({
+            'profile': profile_serializer.data,
+            'latest_lab_report': lab_report_data
+        }, status=status.HTTP_200_OK)
 
     def put(self, request, patient_id):
         if not PatientAssignment.objects.filter(nutritionist=request.user, patient_id=patient_id).exists():
@@ -427,6 +433,7 @@ class PatientLabReportsView(generics.ListAPIView):
 class PatientLabReportListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
     serializer_class = LabReportSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ['report_date']
     ordering_fields = ['report_date']
@@ -435,9 +442,12 @@ class PatientLabReportListCreateView(generics.ListCreateAPIView):
         patient_id = self.kwargs['patient_id']
         if not PatientAssignment.objects.filter(nutritionist=self.request.user, patient_id=patient_id).exists():
             raise PermissionDenied("You are not assigned to this patient.")
-        return LabReport.objects.filter(user_id=patient_id)
+        return LabReport.objects.filter(user_id=patient_id).order_by('-report_date')
 
     def create(self, request, *args, **kwargs):
+        patient_id = self.kwargs['patient_id']
+        if not PatientAssignment.objects.filter(nutritionist=request.user, patient_id=patient_id).exists():
+            return Response({'error': 'You are not assigned to this patient.', 'detail': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
         from subscriptions.permissions import check_nutritionist_feature
         allowed, err_msg, plan_name = check_nutritionist_feature(request.user, "nutri_lab_reports_allowed")
         if not allowed:
@@ -464,6 +474,7 @@ class PatientLabReportListCreateView(generics.ListCreateAPIView):
 class PatientLabReportDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
     serializer_class = LabReportSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     lookup_field = 'pk'
 
     def get_queryset(self):
@@ -471,6 +482,38 @@ class PatientLabReportDetailView(generics.RetrieveUpdateDestroyAPIView):
         if not PatientAssignment.objects.filter(nutritionist=self.request.user, patient_id=patient_id).exists():
             raise PermissionDenied("You are not assigned to this patient.")
         return LabReport.objects.filter(user_id=patient_id)
+
+    def update(self, request, *args, **kwargs):
+        patient_id = self.kwargs['patient_id']
+        if not PatientAssignment.objects.filter(nutritionist=request.user, patient_id=patient_id).exists():
+            return Response({'error': 'You are not assigned to this patient.', 'detail': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
+        from subscriptions.permissions import check_nutritionist_feature
+        allowed, err_msg, plan_name = check_nutritionist_feature(request.user, "nutri_lab_reports_allowed")
+        if not allowed:
+            return Response({
+                "error": err_msg,
+                "detail": err_msg,
+                "upgrade_required": True,
+                "feature": "nutri_lab_reports_allowed",
+                "current_plan": plan_name
+            }, status=status.HTTP_403_FORBIDDEN)
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        patient_id = self.kwargs['patient_id']
+        if not PatientAssignment.objects.filter(nutritionist=request.user, patient_id=patient_id).exists():
+            return Response({'error': 'You are not assigned to this patient.', 'detail': 'You are not assigned to this patient.'}, status=status.HTTP_403_FORBIDDEN)
+        from subscriptions.permissions import check_nutritionist_feature
+        allowed, err_msg, plan_name = check_nutritionist_feature(request.user, "nutri_lab_reports_allowed")
+        if not allowed:
+            return Response({
+                "error": err_msg,
+                "detail": err_msg,
+                "upgrade_required": True,
+                "feature": "nutri_lab_reports_allowed",
+                "current_plan": plan_name
+            }, status=status.HTTP_403_FORBIDDEN)
+        return super().destroy(request, *args, **kwargs)
 
 
 # ==============================================================================
@@ -1269,8 +1312,10 @@ class NutritionistSelfProfileView(APIView):
                 pass
         if "offline_payment_required" in data and data.get("offline_payment_required") not in [None, ""]:
             val = data.get("offline_payment_required")
-            nutri_profile.pending_offline_payment_required = val in [True, "true", "True", 1, "1"]
-            price_requested = True
+            is_req = val in [True, "true", "True", 1, "1"]
+            nutri_profile.offline_payment_required = is_req
+            nutri_profile.pending_offline_payment_required = is_req
+            nutri_fields_to_update.extend(["offline_payment_required", "pending_offline_payment_required"])
 
         if price_requested:
             nutri_profile.price_approval_status = "pending"
@@ -1278,7 +1323,6 @@ class NutritionistSelfProfileView(APIView):
             nutri_fields_to_update.extend([
                 "pending_online_price",
                 "pending_offline_price",
-                "pending_offline_payment_required",
                 "price_approval_status",
                 "price_rejection_reason"
             ])
