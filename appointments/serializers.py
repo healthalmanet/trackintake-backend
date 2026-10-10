@@ -90,6 +90,18 @@ class AvailabilitySlotCreateSerializer(serializers.ModelSerializer):
         model = AvailabilitySlot
         fields = ['date', 'start_time', 'end_time', 'slot_type']
 
+    def validate(self, data):
+        date = data.get("date")
+        start_time = data.get("start_time")
+        today = timezone.localdate()
+        now_time = timezone.localtime().time()
+
+        if date < today:
+            raise serializers.ValidationError({"date": "Cannot create availability slots for past dates."})
+        if date == today and start_time and start_time < now_time:
+            raise serializers.ValidationError({"start_time": "Cannot create availability slots for past time slots today."})
+        return data
+
 
 class AppointmentCreateSerializer(serializers.Serializer):
     slot_id = serializers.IntegerField()

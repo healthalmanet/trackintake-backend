@@ -388,11 +388,27 @@ class AvailableSlotsView(ListAPIView):
         date = self.request.query_params.get('date')
         appointment_type = self.request.query_params.get('appointment_type')
 
+        today = localdate()
+        now_time = timezone.localtime().time()
+
         qs = AvailabilitySlot.objects.filter(
             nutritionist_id=nutritionist_id,
-            date=date,
             is_booked=False
         )
+
+        if date:
+            parsed_date = parse_date(date)
+            if parsed_date:
+                if parsed_date < today:
+                    return AvailabilitySlot.objects.none()
+                elif parsed_date == today:
+                    qs = qs.filter(date=parsed_date, start_time__gt=now_time)
+                else:
+                    qs = qs.filter(date=parsed_date)
+        else:
+            qs = qs.filter(
+                Q(date__gt=today) | Q(date=today, start_time__gt=now_time)
+            )
 
         if appointment_type:
             qs = qs.filter(
@@ -514,12 +530,19 @@ class NutritionistAddAvailabilityView(APIView):
             for s in existing_slots:
                 existing_by_date.setdefault(s['date'], []).append((s['start_time'], s['end_time']))
             
+            today = localdate()
+            now_time = timezone.localtime().time()
+
             slots_to_create = []
             for item in serializer.validated_data:
                 d = item['date']
                 st = item['start_time']
                 et = item['end_time']
                 
+                if d < today or (d == today and st < now_time):
+                    errors.append(f"{d} {st}-{et}: Cannot create slots in the past.")
+                    continue
+
                 if st >= et:
                     errors.append(f"{d} {st}-{et}: Start time must be before end time.")
                     continue
