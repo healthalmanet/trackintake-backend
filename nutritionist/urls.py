@@ -17,6 +17,8 @@ from .views import (
     PatientLabReportsView, # Note: This might be redundant now with ListCreateView
     PatientMealLogView,
     PatientProfileDetailView,
+    PatientWeightLogView,
+    PatientWaterLogView,
     TargetNutrientsForPatientView,
     UpdateRetrainingFlagsView,
     UserListForNutritionistView,
@@ -50,6 +52,8 @@ urlpatterns = [
     # ===================================================================
     path('nutritionist/patients/<int:patient_id>/profile/', PatientProfileDetailView.as_view(), name='nutritionist-patient-profile'),
     path('nutritionist/patients/<int:patient_id>/meals/', PatientMealLogView.as_view(), name='nutritionist-patient-meals'),
+    path('nutritionist/patients/<int:patient_id>/weight-logs/', PatientWeightLogView.as_view(), name='nutritionist-patient-weight-logs'),
+    path('nutritionist/patients/<int:patient_id>/water-logs/', PatientWaterLogView.as_view(), name='nutritionist-patient-water-logs'),
     path('nutritionist/patients/<int:patient_id>/daily-summary/', PatientDailySummaryView.as_view(), name='nutritionist-patient-summary'),
     path('nutritionist/patients/<int:patient_id>/target-nutrients/', TargetNutrientsForPatientView.as_view(), name='nutritionist-patient-targets'),
     path('nutritionist/patients/<int:patient_id>/generate-plan/', GeneratePlanForPatientView.as_view(), name='nutritionist-generate-patient-plan'),

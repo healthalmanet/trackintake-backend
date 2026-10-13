@@ -9,6 +9,32 @@ from rest_framework.permissions import IsAuthenticated
 
 
 
+def sync_weight_log_from_profile(user, weight_kg):
+    if weight_kg is None:
+        return
+    try:
+        from features.models import WeightLog
+        from django.utils import timezone
+        today = timezone.now().date()
+        today_log = WeightLog.objects.filter(user=user, date=today).first()
+        if today_log:
+            if today_log.weight_kg != float(weight_kg):
+                today_log.weight_kg = float(weight_kg)
+                today_log.time_logged = timezone.now()
+                today_log.save(update_fields=['weight_kg', 'time_logged'])
+        else:
+            latest_log = WeightLog.objects.filter(user=user).order_by('-date', '-time_logged').first()
+            if not latest_log or latest_log.weight_kg != float(weight_kg):
+                WeightLog.objects.create(
+                    user=user,
+                    date=today,
+                    weight_kg=float(weight_kg),
+                    time_logged=timezone.now()
+                )
+    except Exception:
+        pass
+
+
 class UserProfileView(APIView):
     """
     A single endpoint to handle the user's profile.
@@ -35,7 +61,9 @@ class UserProfileView(APIView):
         
         serializer = self.serializer_class(data=request.data)
         if serializer.is_valid():
-            serializer.save(user=request.user)
+            profile_obj = serializer.save(user=request.user)
+            if profile_obj.weight_kg is not None:
+                sync_weight_log_from_profile(request.user, profile_obj.weight_kg)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -45,7 +73,9 @@ class UserProfileView(APIView):
             profile = UserProfile.objects.get(user=request.user)
             serializer = self.serializer_class(profile, data=request.data)
             if serializer.is_valid():
-                serializer.save()
+                profile_obj = serializer.save()
+                if profile_obj.weight_kg is not None:
+                    sync_weight_log_from_profile(request.user, profile_obj.weight_kg)
                 return Response(serializer.data, status=status.HTTP_200_OK)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         except UserProfile.DoesNotExist:
@@ -57,7 +87,9 @@ class UserProfileView(APIView):
             profile = UserProfile.objects.get(user=request.user)
             serializer = self.serializer_class(profile, data=request.data, partial=True)
             if serializer.is_valid():
-                serializer.save()
+                profile_obj = serializer.save()
+                if 'weight_kg' in request.data and profile_obj.weight_kg is not None:
+                    sync_weight_log_from_profile(request.user, profile_obj.weight_kg)
                 return Response(serializer.data, status=status.HTTP_200_OK)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         except UserProfile.DoesNotExist:

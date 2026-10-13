@@ -36,6 +36,9 @@ from userProfile.models import LabReport, UserProfile
 from userProfile.serializers import UserProfileSerializer
 
 from userFood.models import FoodItem, UserMeal
+from features.models import WeightLog, WaterIntakeLog
+from features.serializers import WeightLogSerializer, WaterIntakeLogSerializer
+from userProfile.views import sync_weight_log_from_profile
 
 from user.models import User
 from user.serializers import sanitize_json_string_list
@@ -412,6 +415,8 @@ class PatientProfileDetailView(APIView):
         serializer = self.PatientProfileSerializer1(instance=user_profile, data=request.data, partial=True)
         if serializer.is_valid():
             profile_obj = serializer.save()
+            if 'weight_kg' in request.data and profile_obj.weight_kg is not None:
+                sync_weight_log_from_profile(user_profile.user, profile_obj.weight_kg)
             return Response(self.PatientProfileSerializer1(profile_obj).data, status=status.HTTP_200_OK)
         return Response({"detail": "Failed to update profile.", "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -535,6 +540,58 @@ class PatientMealLogView(generics.ListAPIView):
         return UserMeal.objects.filter(user_id=patient_id).select_related('food_item')
 
 
+class PatientWeightLogView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsNutritionist]
+    serializer_class = WeightLogSerializer
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['date']
+    ordering_fields = ['date', 'time_logged']
+    ordering = ['-date', '-time_logged']
+
+    def get_queryset(self):
+        patient_id = self.kwargs['patient_id']
+        if not PatientAssignment.objects.filter(nutritionist=self.request.user, patient_id=patient_id).exists():
+            raise PermissionDenied("You are not assigned to this patient.")
+        qs = WeightLog.objects.filter(user_id=patient_id)
+        date_param = self.request.query_params.get('date')
+        if date_param:
+            qs = qs.filter(date=date_param)
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            qs = qs.filter(date__gte=start_date)
+        if end_date:
+            qs = qs.filter(date__lte=end_date)
+        return qs
+
+
+class PatientWaterLogView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated, IsNutritionist]
+    serializer_class = WaterIntakeLogSerializer
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['date']
+    ordering_fields = ['date']
+    ordering = ['-date']
+
+    def get_queryset(self):
+        patient_id = self.kwargs['patient_id']
+        if not PatientAssignment.objects.filter(nutritionist=self.request.user, patient_id=patient_id).exists():
+            raise PermissionDenied("You are not assigned to this patient.")
+        qs = WaterIntakeLog.objects.filter(user_id=patient_id)
+        date_param = self.request.query_params.get('date')
+        if date_param:
+            qs = qs.filter(date=date_param)
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            qs = qs.filter(date__gte=start_date)
+        if end_date:
+            qs = qs.filter(date__lte=end_date)
+        return qs
+
+
+
+
 class PatientDailySummaryView(APIView):
     permission_classes = [IsAuthenticated, IsNutritionist]
 
@@ -563,9 +620,13 @@ class PatientDailySummaryView(APIView):
             total_fiber=Sum("fiber", default=0),
         )
 
+        water_logs = WaterIntakeLog.objects.filter(user_id=patient_id, date=target_date)
+        total_water_ml = water_logs.aggregate(total=Sum("amount_ml"))["total"] or 0
+
         return Response({
             "patient_id": patient_id,
             "date": target_date,
+            "water_ml": total_water_ml,
             **{k.replace("total_", ""): v for k, v in totals.items()}
         })
 
