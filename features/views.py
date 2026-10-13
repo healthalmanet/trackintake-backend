@@ -45,16 +45,21 @@ class WeightLogViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ['date']
     ordering_fields = ['date', 'time_logged']
-    ordering = ['-time_logged']
+    ordering = ['-date', '-time_logged']
 
     def get_queryset(self):
         return WeightLog.objects.filter(user=self.request.user)
     
     def perform_create(self, serializer):
-        # serializer.save(user=self.request.user) Subscription added
         require_plan_feature(self.request.user, "weight_tracker_allowed")
-
         serializer.save(user=self.request.user)
+
+    def perform_update(self, serializer):
+        require_plan_feature(self.request.user, "weight_tracker_allowed")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        instance.delete()
 
 
 

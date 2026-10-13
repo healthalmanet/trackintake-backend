@@ -5,14 +5,52 @@ from django.conf import settings
 from cloudinary_storage.storage import MediaCloudinaryStorage
 
 
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
+
+
 class WeightLog(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     date = models.DateField()
     weight_kg = models.FloatField()
     time_logged = models.DateTimeField(default=timezone.now)
 
+    class Meta:
+        ordering = ['-date', '-time_logged']
+
     def __str__(self):
         return f"{self.user} - {self.date} - {self.weight_kg} kg"
+
+
+@receiver(post_save, sender=WeightLog)
+def sync_profile_on_weight_save(sender, instance, **kwargs):
+    if getattr(instance, '_skip_profile_sync', False):
+        return
+    try:
+        from userProfile.models import UserProfile
+        latest_log = WeightLog.objects.filter(user=instance.user).order_by('-date', '-time_logged').first()
+        if latest_log:
+            profile = UserProfile.objects.filter(user=instance.user).first()
+            if profile and profile.weight_kg != latest_log.weight_kg:
+                profile.weight_kg = latest_log.weight_kg
+                profile.save(update_fields=['weight_kg'])
+    except Exception:
+        pass
+
+
+@receiver(post_delete, sender=WeightLog)
+def sync_profile_on_weight_delete(sender, instance, **kwargs):
+    try:
+        from userProfile.models import UserProfile
+        latest_log = WeightLog.objects.filter(user=instance.user).order_by('-date', '-time_logged').first()
+        profile = UserProfile.objects.filter(user=instance.user).first()
+        if profile:
+            new_weight = latest_log.weight_kg if latest_log else None
+            if profile.weight_kg != new_weight:
+                profile.weight_kg = new_weight
+                profile.save(update_fields=['weight_kg'])
+    except Exception:
+        pass
 
 
 
