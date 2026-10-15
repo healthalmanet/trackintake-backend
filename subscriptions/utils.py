@@ -85,7 +85,11 @@ def require_plan_feature(user, feature_flag):
         raise PermissionDenied("Please upgrade to a paid plan.")
 
     # 🚫 Feature not included in plan
-    if not getattr(subscription.plan, feature_flag, False):
+    has_feature = getattr(subscription.plan, feature_flag, False)
+    if not has_feature and getattr(subscription.plan, "plan_type", None) == "nutritionist":
+        has_feature = getattr(subscription.plan, f"nutri_{feature_flag}", False)
+
+    if not has_feature:
         raise PermissionDenied(
             f"This feature is not included in your {subscription.plan.name} plan."
         )
