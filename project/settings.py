@@ -334,9 +334,11 @@ SOCIALACCOUNT_PROVIDERS = {
 }
 
 # ==============================================================================
-# OTHER PROJECT SETTINGS
+# GEMINI AI MODEL SETTINGS
 # ==============================================================================
 GEMINI_API_KEY = config("GEMINI_API_KEY", default=None)
+GEMINI_MODEL = config("GEMINI_MODEL", default="gemini-flash-lite-latest")
+GEMINI_FALLBACK_MODEL = config("GEMINI_FALLBACK_MODEL", default="gemini-2.5-flash")
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},

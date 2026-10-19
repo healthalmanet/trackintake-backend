@@ -31,6 +31,16 @@ if API_KEY:
     genai.configure(api_key=API_KEY)
 
 
+def get_gemini_models_to_try() -> list:
+    """Return [default_model, fallback_model] configured via env or settings."""
+    default_model = os.getenv("GEMINI_MODEL") or getattr(settings, "GEMINI_MODEL", "gemini-flash-lite-latest")
+    fallback_model = os.getenv("GEMINI_FALLBACK_MODEL") or getattr(settings, "GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
+    models = [default_model]
+    if fallback_model and fallback_model != default_model:
+        models.append(fallback_model)
+    return models
+
+
 # --- Internal Helper Functions (No changes needed here) ---
 def _serialize_user_profile(profile: UserProfile) -> dict:
     """Serializes the complete UserProfile model into a dictionary."""
@@ -231,7 +241,7 @@ SUGGESTED DAILY CALORIC BUDGET DISTRIBUTION:
   "suggestion_flags": ["<flag1>", "<flag2>"]
 }}
 """
-        models_to_try = ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-flash-latest"]
+        models_to_try = get_gemini_models_to_try()
         full_plan_json = None
         config = genai.types.GenerationConfig(temperature=0.3, response_mime_type="application/json")
 
@@ -322,7 +332,7 @@ CRITICAL RULES:
 - Every numeric value MUST be an accurate numeric float or int (never null, never string).
 - Return ONLY valid JSON matching the schema above.
 """
-    models_to_try = ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-flash-latest"]
+    models_to_try = get_gemini_models_to_try()
     config = genai.types.GenerationConfig(temperature=0.1, response_mime_type="application/json")
 
     for m_name in models_to_try:

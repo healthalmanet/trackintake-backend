@@ -145,9 +145,12 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.permissions import AllowAny
 
+import os
+from django.conf import settings
+
 try:
     from google import genai
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    GEMINI_API_KEY = getattr(settings, "GEMINI_API_KEY", None) or os.getenv("GEMINI_API_KEY")
     ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 except Exception:
     ai_client = None
@@ -230,19 +233,27 @@ Instructions:
 3. If they ask about TrackIntake features (how to add patients, bulk upload, log meals, track water, calculate BMI or body fat, upload lab reports), provide exact, actionable step-by-step instructions.
 4. Format your answer with clean Markdown (bullet points, bold text). Keep responses concise, clear, and easy to read.
 """
-                try:
-                    ai_response = ai_client.models.generate_content(
-                        model='gemini-2.5-flash',
-                        contents=system_prompt
-                    )
-                    answer_text = (ai_response.text or "").strip()
-                    if answer_text:
-                        return Response({
-                            "answer": answer_text,
-                            "source": "gemini"
-                        })
-                except Exception as ai_err:
-                    print(f"ChatBot Gemini error: {ai_err}")
+                models_to_try = [
+                    getattr(settings, "GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")),
+                ]
+                fallback_m = getattr(settings, "GEMINI_FALLBACK_MODEL", os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash"))
+                if fallback_m and fallback_m not in models_to_try:
+                    models_to_try.append(fallback_m)
+
+                for m in models_to_try:
+                    try:
+                        ai_response = ai_client.models.generate_content(
+                            model=m,
+                            contents=system_prompt
+                        )
+                        answer_text = (ai_response.text or "").strip()
+                        if answer_text:
+                            return Response({
+                                "answer": answer_text,
+                                "source": "gemini"
+                            })
+                    except Exception as ai_err:
+                        print(f"ChatBot Gemini error with {m}: {ai_err}")
 
             # Fallback to best FAQ match if score >= 2
             if max_score >= 2 and best_match:

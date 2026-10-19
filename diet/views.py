@@ -59,10 +59,17 @@ class DietPlanView(APIView):
                     active_plan = p
                     break
 
-            # B. If no plan actively covers today, prioritize the most recently created approved plan
-            # (e.g. newly created plan scheduled to start soon or current active cycle)
+            # B. If no plan actively covers today:
+            # 1. Prefer approved plan with start date <= today (closest current/recent cycle)
             if not active_plan and approved_plans:
-                active_plan = approved_plans[0]
+                current_or_past = [p for p in approved_plans if p.for_week_starting <= today]
+                if current_or_past:
+                    current_or_past.sort(key=lambda x: x.for_week_starting, reverse=True)
+                    active_plan = current_or_past[0]
+                else:
+                    # All approved plans are future; pick the one starting earliest (nearest upcoming)
+                    approved_plans.sort(key=lambda x: x.for_week_starting)
+                    active_plan = approved_plans[0]
 
             if active_plan:
                 serializer = DietRecommendationSerializer(active_plan)
