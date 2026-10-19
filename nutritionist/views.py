@@ -823,15 +823,17 @@ class EditDietPlanView(generics.GenericAPIView):
     @transaction.atomic
     def patch(self, request, pk=None, recommendation_id=None, *args, **kwargs):
         from subscriptions.permissions import check_nutritionist_feature
-        allowed, err_msg, plan_name = check_nutritionist_feature(request.user, "nutri_manual_diet_allowed")
-        if not allowed:
-            return Response({
-                "error": err_msg,
-                "detail": err_msg,
-                "upgrade_required": True,
-                "feature": "nutri_manual_diet_allowed",
-                "current_plan": plan_name
-            }, status=status.HTTP_403_FORBIDDEN)
+        new_meals_data = request.data.get('meals')
+        if new_meals_data and isinstance(new_meals_data, dict):
+            allowed, err_msg, plan_name = check_nutritionist_feature(request.user, "nutri_manual_diet_allowed")
+            if not allowed:
+                return Response({
+                    "error": err_msg,
+                    "detail": err_msg,
+                    "upgrade_required": True,
+                    "feature": "nutri_manual_diet_allowed",
+                    "current_plan": plan_name
+                }, status=status.HTTP_403_FORBIDDEN)
 
         plan_id = pk or recommendation_id
         try:

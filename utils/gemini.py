@@ -34,11 +34,32 @@ if env_path.exists():
     dotenv.load_dotenv(env_path, override=True)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
 
 if not GEMINI_API_KEY:
     raise RuntimeError(f"❌ GEMINI_API_KEY not found in environment variables.")
 client = genai.Client(api_key=GEMINI_API_KEY)
 logger = logging.getLogger(__name__)
+
+
+def generate_content_with_fallback(contents, config=None):
+    """Try GEMINI_MODEL first; if it fails, automatically retry with GEMINI_FALLBACK_MODEL."""
+    models_to_try = [GEMINI_MODEL]
+    if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != GEMINI_MODEL:
+        models_to_try.append(GEMINI_FALLBACK_MODEL)
+
+    last_err = None
+    for m in models_to_try:
+        try:
+            kwargs = {"model": m, "contents": contents}
+            if config is not None:
+                kwargs["config"] = config
+            return client.models.generate_content(**kwargs)
+        except Exception as e:
+            last_err = e
+            logger.warning("Gemini model %s failed: %s. Trying fallback if available...", m, e)
+    raise last_err
 
 # Import Django models AFTER env is loaded
 
@@ -162,8 +183,7 @@ Backwards compatible extension:
 Now return the same JSON structure with correct values for: "{food_query}"
 """
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        response = generate_content_with_fallback(
             contents=prompt,
             config={"temperature": 0.0,
                     "response_mime_type": "application/json"},
@@ -386,8 +406,7 @@ JSON Structure (if valid food item):
         print(f"🔄 Querying Gemini with natural language query: '{clean_query}'...")
         start_time = time.time()
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        response = generate_content_with_fallback(
             contents=prompt,
             config={
                 "temperature": 0.0,
@@ -584,8 +603,7 @@ Each object must use these exact keys:
 """
 
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        response = generate_content_with_fallback(
             contents=prompt,
             config={
                 "temperature": 0.2,
@@ -763,8 +781,7 @@ Return ONLY a valid JSON object matching this schema:
 
     try:
         image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg")
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        response = generate_content_with_fallback(
             contents=[image_part, prompt],
             config=types.GenerateContentConfig(
                 temperature=0.1,
