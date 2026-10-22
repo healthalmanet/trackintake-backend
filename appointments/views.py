@@ -383,6 +383,17 @@ class MyInHouseNutritionistView(APIView):
 class AvailableSlotsView(ListAPIView):
     serializer_class = AvailabilitySlotSerializer
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        nutritionist_id = self.kwargs.get('nutritionist_id')
+        if nutritionist_id:
+            try:
+                from nutritionist.models import NutritionistProfile
+                context["nutritionist_profile"] = NutritionistProfile.objects.filter(user_id=nutritionist_id).first()
+            except Exception:
+                pass
+        return context
+
     def get_queryset(self):
         nutritionist_id = self.kwargs['nutritionist_id']
         date = self.request.query_params.get('date')
@@ -394,7 +405,7 @@ class AvailableSlotsView(ListAPIView):
         qs = AvailabilitySlot.objects.filter(
             nutritionist_id=nutritionist_id,
             is_booked=False
-        )
+        ).select_related("nutritionist", "nutritionist__nutritionist_profile")
 
         if date:
             parsed_date = parse_date(date)
