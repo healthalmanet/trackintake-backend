@@ -346,11 +346,15 @@ class MyInHouseNutritionistView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        try:
-            assignment = PatientAssignment.objects.select_related(
+        assignment = (
+            PatientAssignment.objects.select_related(
                 "nutritionist", "nutritionist__nutritionist_profile"
-            ).get(patient=request.user)
-        except PatientAssignment.DoesNotExist:
+            )
+            .filter(patient=request.user)
+            .order_by("-assigned_at", "-id")
+            .first()
+        )
+        if not assignment:
             return Response(
                 {"detail": "No in-house nutritionist assigned"},
                 status=404
@@ -362,7 +366,7 @@ class MyInHouseNutritionistView(APIView):
 
         return Response({
             "nutritionist_id": nutri.id,
-            "nutritionist_name": nutri.full_name or nutri.username,
+            "nutritionist_name": nutri.full_name or nutri.email,
             "nutritionist_email": nutri.email,
             "professional_title": profile.professional_title if profile else "Clinical Nutritionist",
             "qualification": profile.qualification if profile else "",
