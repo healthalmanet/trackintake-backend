@@ -658,6 +658,7 @@ class FoodSuggestionView(APIView):
 
         user = request.user
         meal_type = request.query_params.get("meal_type") or None
+        slot = request.query_params.get("slot") or None
         limit = min(int(request.query_params.get("limit", 5)), 10)
 
         # ── Period param (?period=daily or ?period=weekly) ───────
@@ -667,7 +668,7 @@ class FoodSuggestionView(APIView):
             period_param = None  # ignore invalid values
 
         result = build_suggestions(
-            user=user, meal_type=meal_type, limit=limit, period=period_param)
+            user=user, meal_type=meal_type, limit=limit, period=period_param, slot=slot)
 
         if "error" in result:
             return Response({"detail": result["error"]}, status=400)
@@ -686,10 +687,11 @@ class FoodSuggestionView(APIView):
                     f"user_{user.id}",
                     {
                         "type":           "send_suggestion",
-                        "message":        f"💡 You still need {remaining['protein_g']:.0f}g protein today",
+                        "message":        result.get("overall_advice") or f"💡 You still need {remaining['protein_g']:.0f}g protein today",
                         "top_suggestion": top["food_name"],
-                        "reason":         top["reasons"][0] if top["reasons"] else "",
+                        "reason":         top["reasons"][0] if top.get("reasons") else "",
                         "calories_left":  remaining["calories"],
+                        "slot":           result.get("slot"),
                     },
                 )
                 ws_pushed = True
@@ -712,8 +714,10 @@ class FoodSuggestionView(APIView):
             "goal":                result["goal"],
             "suggestions":         result["suggestions"],
             "plan_reminder":       result["plan_reminder"],
+            "overall_advice":      result.get("overall_advice", ""),
+            "slot":                result.get("slot", "daily"),
             "health_context":      result.get("health_context", {}),
-            "period":              result.get("period", "daily"),   # ← new
+            "period":              result.get("period", "daily"),
             "delivery": {
                 "ws_pushed":    ws_pushed,
                 "email_queued": email_q,
