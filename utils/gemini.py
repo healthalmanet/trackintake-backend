@@ -959,3 +959,281 @@ Return ONLY a valid JSON object matching this schema:
         raise
 
 
+def generate_ai_food_suggestions(
+    user_profile,
+    remaining_nutrients: dict,
+    consumed_nutrients: dict = None,
+    target_nutrients: dict = None,
+    goal: str = None,
+    meal_type: str = None,
+    period: str = "daily",
+    slot: str = None,
+    lab_data: dict = None,
+    conditions: dict = None,
+    diet_plan_items: list = None,
+    limit: int = 5,
+) -> dict:
+    """
+    Primary AI clinical food suggestion engine.
+    Uses Gemini to generate highly personalized daily/weekly food recommendations
+    tailored to the user's complete health profile, chronic conditions, lab markers,
+    diet preferences, allergies, country/cuisine, and macro targets.
+    Persists/links suggestions to FoodItem so they are immediately loggable.
+    """
+    import json as _json
+    from datetime import date
+    from userFood.models import FoodItem, FoodType, MealType, Allergen
+
+    # 1. Anthropometrics & Demographics
+    age_str = "Not specified"
+    dob = getattr(user_profile, "date_of_birth", None)
+    if dob:
+        try:
+            today = date.today()
+            age_val = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+            age_str = f"{age_val} years old"
+        except Exception:
+            pass
+
+    gender = getattr(user_profile, "gender", "other") or "other"
+    height_cm = getattr(user_profile, "height_cm", None)
+    weight_kg = getattr(user_profile, "weight_kg", None)
+    bmi = getattr(user_profile, "bmi", None)
+    user_goal = goal or getattr(user_profile, "goal", "Maintain Weight") or "Maintain Weight"
+    activity_level = getattr(user_profile, "activity_level", "Sedentary") or "Sedentary"
+    diet_type = getattr(user_profile, "diet_type", "other") or "other"
+    allergies = getattr(user_profile, "allergies", "None") or "None"
+    country = getattr(user_profile, "country", "India") or "India"
+    city = getattr(user_profile, "city", "") or ""
+
+    # 2. Medical conditions (Profile + Lab confirmed)
+    cond = conditions or {}
+    is_diabetic = bool(cond.get("is_diabetic", getattr(user_profile, "is_diabetic", False)))
+    is_hypertensive = bool(cond.get("is_hypertensive", getattr(user_profile, "is_hypertensive", False)))
+    has_heart = bool(cond.get("has_heart", getattr(user_profile, "has_heart_condition", False)))
+    has_thyroid = bool(cond.get("has_thyroid", getattr(user_profile, "has_thyroid_disorder", False)))
+    has_arthritis = bool(cond.get("has_arthritis", getattr(user_profile, "has_arthritis", False)))
+    has_gastric = bool(cond.get("has_gastric", getattr(user_profile, "has_gastric_issues", False)))
+    other_chronic = getattr(user_profile, "other_chronic_condition", "") or ""
+
+    is_pregnant = bool(getattr(user_profile, "is_pregnant", False))
+    trimester = getattr(user_profile, "current_trimester", None)
+    is_breastfeeding = bool(getattr(user_profile, "is_breastfeeding", False))
+
+    # 3. Lab Biomarkers summary
+    lab_summary = []
+    if lab_data:
+        if lab_data.get("hba1c"):
+            lab_summary.append(f"HbA1c: {lab_data['hba1c']}%")
+        if lab_data.get("fasting_blood_sugar"):
+            lab_summary.append(f"Fasting Blood Sugar: {lab_data['fasting_blood_sugar']} mg/dL")
+        if lab_data.get("blood_pressure_systolic"):
+            lab_summary.append(f"BP Systolic: {lab_data['blood_pressure_systolic']} mmHg")
+        if lab_data.get("ldl_cholesterol"):
+            lab_summary.append(f"LDL Cholesterol: {lab_data['ldl_cholesterol']} mg/dL")
+        if lab_data.get("triglycerides"):
+            lab_summary.append(f"Triglycerides: {lab_data['triglycerides']} mg/dL")
+        if lab_data.get("uric_acid"):
+            lab_summary.append(f"Uric Acid: {lab_data['uric_acid']} mg/dL")
+        if lab_data.get("vitamin_d3"):
+            lab_summary.append(f"Vitamin D3: {lab_data['vitamin_d3']} ng/mL")
+        if lab_data.get("vitamin_b12"):
+            lab_summary.append(f"Vitamin B12: {lab_data['vitamin_b12']} pg/mL")
+        if lab_data.get("tsh"):
+            lab_summary.append(f"TSH: {lab_data['tsh']} µIU/mL")
+    labs_str = ", ".join(lab_summary) if lab_summary else "No recent lab anomalies logged."
+
+    # 4. Slot & Time Hint
+    time_slot = slot or "daily"
+    target_meal = meal_type or ("Breakfast" if slot == "morning" else "Lunch" if slot == "afternoon" else "Dinner")
+
+    # 5. Diet plan reminder items
+    plan_hint = ""
+    if diet_plan_items:
+        plan_hint = f"\n- Assigned Nutritionist Plan context: User has plan items: {', '.join(diet_plan_items[:4])}"
+
+    target_count = 7 if period == "weekly" else limit
+
+    prompt = f"""
+You are an expert Clinical Dietitian & AI Nutritionist.
+Analyze the following patient profile and generate {target_count} highly accurate, clinically validated food recommendations for period='{period}'.
+
+PATIENT HEALTH PROFILE:
+- Demographics: Age: {age_str}, Gender: {gender}, Country: {country}, City: {city}
+- Anthropometrics: Height: {height_cm or 'N/A'} cm, Weight: {weight_kg or 'N/A'} kg, BMI: {bmi or 'N/A'}
+- Goal: {user_goal}, Activity Level: {activity_level}
+- Dietary Preference: {diet_type}
+- Allergies / Intolerances: {allergies} (STRICTLY AVOID)
+- Medical Conditions:
+  * Diabetic / Glucose Intolerance: {is_diabetic}
+  * Hypertensive / High BP: {is_hypertensive}
+  * Cardiovascular / Heart Health: {has_heart}
+  * Thyroid Disorder: {has_thyroid}
+  * Arthritis / High Uric Acid: {has_arthritis}
+  * Gastric / Acid Reflux / IBS: {has_gastric}
+  * Other Chronic Condition: {other_chronic or 'None'}
+  * Pregnancy Status: Currently Pregnant: {is_pregnant} (Trimester: {trimester or 'N/A'}), Breastfeeding: {is_breastfeeding}
+- Clinical Lab Markers: {labs_str}
+- Period: {period}
+- Time Slot: {time_slot} (Target Meal Category: {target_meal})
+- Nutritional Context:
+  * Remaining Calories: {remaining_nutrients.get('calories', 400):.0f} kcal
+  * Remaining Protein: {remaining_nutrients.get('protein_g', 25):.0f}g
+  * Remaining Carbs: {remaining_nutrients.get('carbs_g', 50):.0f}g
+  * Remaining Fats: {remaining_nutrients.get('fat_g', 15):.0f}g
+  * Targets: {target_nutrients or {}}{plan_hint}
+
+CLINICAL RULES:
+1. Strict Diet Adherence: If vegetarian/vegan, do NOT suggest meat, poultry, fish, or eggs (if vegan, no dairy/eggs).
+2. Strict Allergy Safety: NEVER include any allergen listed ({allergies}).
+3. Cultural Familiarity: Suggest authentic, widely accessible whole foods commonly eaten in {country} (and {city} if known).
+4. Condition Protocols:
+   - If diabetic: Glycemic Index < 55, low glycemic load, high soluble fiber, minimal refined sugars.
+   - If hypertensive: Low sodium (< 450mg), potassium/magnesium rich (e.g. leafy greens, seeds, legumes).
+   - If heart condition / high LDL: Low saturated fat (< 3g), zero trans fat, high in omega-3 and soluble fiber.
+   - If gastric / IBS: Mild spice, low-FODMAP gentle cooking, avoid high-acidity/deep-fried triggers.
+   - If arthritis / gout: Low purine, anti-inflammatory compounds (turmeric, antioxidants).
+   - If pregnant / lactating: High iron, folate, calcium, adequate hydration, safe pasteurized whole foods.
+5. Macro Calibration:
+   - For 'daily': suggest {target_count} tailored choices for {target_meal} or appropriate slot that comfortably fit within remaining macros.
+   - For 'weekly': suggest 7 distinct meals (one for each day: Monday through Sunday) forming a varied, nutritionally complete rotation.
+6. Provide specific, realistic portion sizes (e.g. '1 bowl (180g)', '2 rotis (70g) with 1 cup dal (150g)').
+
+RETURN FORMAT:
+Return ONLY a valid JSON object matching this exact structure:
+{{
+  "overall_advice": "<2-3 sentence personalized clinical advice addressing their specific conditions, today's targets, and meal timing>",
+  "slot": "{time_slot}",
+  "period": "{period}",
+  "suggestions": [
+    {{
+      "food_name": "<exact whole food name>",
+      "day": "<e.g. Monday or Day 1 for weekly, or null for daily>",
+      "meal_type": "<Breakfast|Lunch|Dinner|Snack>",
+      "portion_size": "<e.g. 1 bowl (200g)>",
+      "default_quantity": 1.0,
+      "default_unit": "<bowl|cup|plate|piece|serving>",
+      "gram_equivalent": 200.0,
+      "calories": 280.0,
+      "protein": 14.0,
+      "carbs": 36.0,
+      "fats": 7.0,
+      "fiber": 6.5,
+      "sugar": 3.0,
+      "estimated_gi": 45.0,
+      "glycemic_load": 12.0,
+      "score": 95,
+      "reasons": [
+        "<clinical reason 1 referencing their specific biomarker/condition/goal>",
+        "<clinical reason 2 on macro/micronutrient benefit>"
+      ],
+      "warnings": [
+        "<practical preparation tip or warning>"
+      ],
+      "suitability_tags": ["<Diabetic-Friendly|Heart-Healthy|High-Protein|Low-GI|High-Fiber>"],
+      "food_type": "<Vegetarian|Non-Vegetarian|Vegan|Eggetarian>"
+    }}
+  ]
+}}
+"""
+
+    try:
+        response = generate_content_with_fallback(
+            contents=prompt,
+            config={
+                "temperature": 0.25,
+                "response_mime_type": "application/json",
+            },
+        )
+        raw = response.text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+
+        data = _json.loads(raw)
+        raw_items = data.get("suggestions", [])
+        overall_advice = data.get("overall_advice", "")
+
+        enriched_suggestions = []
+        for item in raw_items:
+            name = (item.get("food_name") or item.get("name") or "").strip()
+            if not name:
+                continue
+
+            defaults = {
+                "default_quantity": get_nullable_float(item, "default_quantity") or 1.0,
+                "default_unit": item.get("default_unit") or "serving",
+                "gram_equivalent": get_nullable_float(item, "gram_equivalent") or 150.0,
+                "calories": get_nullable_float(item, "calories") or 0.0,
+                "protein": get_nullable_float(item, "protein") or 0.0,
+                "carbs": get_nullable_float(item, "carbs") or 0.0,
+                "fats": get_nullable_float(item, "fats") or 0.0,
+                "fiber": get_nullable_float(item, "fiber") or 0.0,
+                "sugar": get_nullable_float(item, "sugar") or 0.0,
+                "estimated_gi": get_nullable_float(item, "estimated_gi"),
+                "glycemic_load": get_nullable_float(item, "glycemic_load"),
+                "is_verified": False,
+            }
+
+            try:
+                food_obj, _ = FoodItem.objects.update_or_create(
+                    name__iexact=name,
+                    defaults={"name": name, **defaults},
+                )
+                if _link_food_attributes:
+                    try:
+                        _link_food_attributes(food_obj)
+                    except Exception:
+                        pass
+
+                ft_name = item.get("food_type") or ("Vegetarian" if diet_type.lower() in ("vegetarian", "vegan") else "Non-Vegetarian")
+                ft_obj, _ = FoodType.objects.get_or_create(name=ft_name)
+                food_obj.food_types.add(ft_obj)
+
+                mt_name = item.get("meal_type") or target_meal
+                mt_obj, _ = MealType.objects.get_or_create(name=mt_name)
+                food_obj.meal_types.add(mt_obj)
+
+                food_id = food_obj.id
+            except Exception as db_err:
+                logger.warning(f"Could not persist FoodItem '{name}': {db_err}")
+                food_id = None
+
+            enriched_suggestions.append({
+                "food_id": food_id,
+                "food_name": name,
+                "day": item.get("day"),
+                "meal_type": item.get("meal_type") or target_meal,
+                "portion_size": item.get("portion_size") or f"{defaults['default_quantity']} {defaults['default_unit']}",
+                "calories": defaults["calories"],
+                "protein": defaults["protein"],
+                "carbs": defaults["carbs"],
+                "fats": defaults["fats"],
+                "fiber": defaults["fiber"],
+                "sugar": defaults["sugar"],
+                "estimated_gi": defaults["estimated_gi"],
+                "glycemic_load": defaults["glycemic_load"],
+                "score": int(item.get("score") or 90),
+                "reasons": item.get("reasons") or ["Clinically formulated to meet your remaining nutritional targets."],
+                "warnings": item.get("warnings") or [],
+                "suitability_tags": item.get("suitability_tags") or [],
+                "source": "ai_clinical",
+                "fills_gap": {
+                    "calories": f"{defaults['calories']:.0f} kcal",
+                    "protein": f"{defaults['protein']:.1f}g",
+                },
+            })
+
+        return {
+            "overall_advice": overall_advice,
+            "slot": time_slot,
+            "period": period,
+            "suggestions": enriched_suggestions,
+        }
+    except Exception as exc:
+        logger.error(f"generate_ai_food_suggestions failed: {exc}", exc_info=True)
+        return None
+
+
+

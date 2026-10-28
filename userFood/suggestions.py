@@ -1298,7 +1298,7 @@ def _get_gemini_candidates(remaining, profile, meal_type=None):
 # MAIN PUBLIC FUNCTION
 # ────────────────────────────────────────────────────────────────
 
-def build_suggestions(user, meal_type=None, limit=5, period=None) -> dict:
+def build_suggestions(user, meal_type=None, limit=5, period=None, slot=None) -> dict:
     from userProfile.models import UserProfile
 
     try:
@@ -1313,6 +1313,22 @@ def build_suggestions(user, meal_type=None, limit=5, period=None) -> dict:
     remaining = nutrient_data["remaining"]
     goal      = nutrient_data["goal"]
 
+    # Auto-detect slot and default meal_type if not provided
+    if not slot:
+        hour = timezone.localtime(timezone.now()).hour
+        if 5 <= hour < 12:
+            slot = "morning"
+            if not meal_type:
+                meal_type = "Breakfast"
+        elif 12 <= hour < 17:
+            slot = "afternoon"
+            if not meal_type:
+                meal_type = "Lunch"
+        else:
+            slot = "evening"
+            if not meal_type:
+                meal_type = "Dinner"
+
     if remaining["calories"] < 50:
         return {
             "message":             "🎉 You've hit your calorie goal for today!",
@@ -1322,6 +1338,9 @@ def build_suggestions(user, meal_type=None, limit=5, period=None) -> dict:
             "goal":                goal,
             "suggestions":         [],
             "plan_reminder":       None,
+            "slot":                slot,
+            "overall_advice":      "Great job reaching your calorie goal for today! Stay hydrated.",
+            "period":              period or nutrient_data.get("period", "daily"),
         }
 
     country          = getattr(profile, "country", "") or ""
@@ -1331,60 +1350,93 @@ def build_suggestions(user, meal_type=None, limit=5, period=None) -> dict:
     lab_data   = _get_latest_lab_data(user)
     conditions = _derive_conditions_from_labs(lab_data, profile)
 
-    # Build pool
-    db_foods                       = _get_db_candidates(remaining, profile, meal_type)
+    # Build diet plan candidates
     plan_candidates, plan_reminder = _get_plan_candidates(user)
 
-    seen_ids   = set()
-    candidates = []
+    # ── PRIMARY ENGINE: Gemini AI Clinical Suggestions ──────────
+    ai_result = None
+    try:
+        from utils.gemini import generate_ai_food_suggestions
+        plan_names = [f[0].name for f in plan_candidates]
+        ai_result = generate_ai_food_suggestions(
+            user_profile=profile,
+            remaining_nutrients=remaining,
+            consumed_nutrients=nutrient_data.get("consumed"),
+            target_nutrients=nutrient_data.get("targets"),
+            goal=goal,
+            meal_type=meal_type,
+            period=period or "daily",
+            slot=slot,
+            lab_data=lab_data,
+            conditions=conditions,
+            diet_plan_items=plan_names,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.warning(f"Gemini AI clinical suggestion engine failed: {exc}", exc_info=True)
 
-    for food_obj, meal_name, day_key, _ in plan_candidates:
-        if food_obj.id not in seen_ids:
-            candidates.append((food_obj, True, meal_name, day_key))
-            seen_ids.add(food_obj.id)
+    # ── SECONDARY / FALLBACK ENGINE: Database Candidates Scoring ──
+    scored = []
+    if not ai_result or not ai_result.get("suggestions"):
+        db_foods = _get_db_candidates(remaining, profile, meal_type)
+        seen_ids = set()
+        candidates = []
 
-    for food_obj in db_foods:
-        if food_obj.id not in seen_ids:
-            candidates.append((food_obj, False, None, None))
-            seen_ids.add(food_obj.id)
+        for food_obj, meal_name, day_key, _ in plan_candidates:
+            if food_obj.id not in seen_ids:
+                candidates.append((food_obj, True, meal_name, day_key))
+                seen_ids.add(food_obj.id)
 
-    if len(candidates) < 5:
-        for food_obj in _get_gemini_candidates(remaining, profile, meal_type):
+        for food_obj in db_foods:
             if food_obj.id not in seen_ids:
                 candidates.append((food_obj, False, None, None))
                 seen_ids.add(food_obj.id)
 
-    # Score & rank
-    scored = []
-    for food_obj, from_plan, meal_name, day_key in candidates:
-        score, reasons, warnings, fills_gap = _score_food(
-            food=food_obj,
-            remaining=remaining,
-            goal=goal,
-            country_keywords=country_keywords,
-            conditions=conditions,
-            from_plan=from_plan,
-        )
-        scored.append({
-            "food_id":    food_obj.id,
-            "food_name":  food_obj.name,
-            "calories":   food_obj.calories  or 0,
-            "protein":    food_obj.protein   or 0,
-            "carbs":      food_obj.carbs     or 0,
-            "fats":       food_obj.fats      or 0,
-            "fiber":      food_obj.fiber     or 0,
-            "sugar":      food_obj.sugar     or 0,
-            "meal_type":  meal_name or (
-                food_obj.meal_types.first().name if food_obj.meal_types.exists() else None
-            ),
-            "source":     "diet_plan" if from_plan else "db",
-            "score":      score,
-            "reasons":    reasons,
-            "warnings":   warnings,
-            "fills_gap":  fills_gap,
-        })
+        if len(candidates) < 5:
+            for food_obj in _get_gemini_candidates(remaining, profile, meal_type):
+                if food_obj.id not in seen_ids:
+                    candidates.append((food_obj, False, None, None))
+                    seen_ids.add(food_obj.id)
 
-    scored.sort(key=lambda x: x["score"], reverse=True)
+        for food_obj, from_plan, meal_name, day_key in candidates:
+            score, reasons, warnings, fills_gap = _score_food(
+                food=food_obj,
+                remaining=remaining,
+                goal=goal,
+                country_keywords=country_keywords,
+                conditions=conditions,
+                from_plan=from_plan,
+            )
+            scored.append({
+                "food_id":    food_obj.id,
+                "food_name":  food_obj.name,
+                "calories":   food_obj.calories  or 0,
+                "protein":    food_obj.protein   or 0,
+                "carbs":      food_obj.carbs     or 0,
+                "fats":       food_obj.fats      or 0,
+                "fiber":      food_obj.fiber     or 0,
+                "sugar":      food_obj.sugar     or 0,
+                "meal_type":  meal_name or (
+                    food_obj.meal_types.first().name if food_obj.meal_types.exists() else None
+                ),
+                "source":     "diet_plan" if from_plan else "db",
+                "score":      score,
+                "reasons":    reasons,
+                "warnings":   warnings,
+                "fills_gap":  fills_gap,
+            })
+        scored.sort(key=lambda x: x["score"], reverse=True)
+
+    final_suggestions = (
+        ai_result.get("suggestions")
+        if (ai_result and ai_result.get("suggestions"))
+        else scored[:limit]
+    )
+    overall_advice = (
+        ai_result.get("overall_advice")
+        if (ai_result and ai_result.get("overall_advice"))
+        else "Nourish your body with balanced macros tailored to your personal goals and lifestyle."
+    )
 
     targets = nutrient_data["targets"]
     ws_push = (
@@ -1403,16 +1455,21 @@ def build_suggestions(user, meal_type=None, limit=5, period=None) -> dict:
         "consumed":            nutrient_data["consumed"],
         "targets":             targets,
         "goal":                goal,
-        "suggestions":         scored[:limit],
+        "suggestions":         final_suggestions,
         "plan_reminder":       plan_reminder,
+        "overall_advice":      overall_advice,
+        "slot":                slot,
         "health_context": {
             "active_conditions": active_conditions,
             "lab_data_used":     bool(lab_data),
         },
-        "period":   nutrient_data.get("period", "daily"),
+        "period":   period or nutrient_data.get("period", "daily"),
         "delivery": {
             "ws_should_push":     ws_push,
             "email_should_queue": email_q,
         },
-        "_meta": {"country": country, "pool_size": len(candidates)},
+        "_meta": {
+            "country": country,
+            "engine": "gemini_clinical_ai" if (ai_result and ai_result.get("suggestions")) else "db_fallback",
+        },
     }
