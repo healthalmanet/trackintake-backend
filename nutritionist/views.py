@@ -1131,15 +1131,19 @@ class MyAssignedNutritionistView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsPatient]
 
     def get(self, request, *args, **kwargs):
-        try:
-            assignment = PatientAssignment.objects.get(patient=request.user)
-            serializer = UserSerializer1(assignment.nutritionist)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        except PatientAssignment.DoesNotExist:
+        assignment = (
+            PatientAssignment.objects.filter(patient=request.user)
+            .select_related("nutritionist")
+            .order_by("-assigned_at", "-id")
+            .first()
+        )
+        if not assignment:
             return Response(
                 {'error': 'You have not been assigned a nutritionist yet.'},
                 status=status.HTTP_404_NOT_FOUND
             )
+        serializer = UserSerializer1(assignment.nutritionist)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
