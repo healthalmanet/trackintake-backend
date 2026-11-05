@@ -8,8 +8,8 @@ from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from datetime import datetime, timedelta
-from .models import AppointmentReminder,AppointmentFeedback
-from nutritionist.models import PatientAssignment
+from .models import AppointmentReminder, AppointmentFeedback, AppointmentNotification
+from nutritionist.models import PatientAssignment, NutritionistProfile
 from subscriptions.services import consume_consultation
 from appointments.zoom_service import create_zoom_meeting
 from .email_utils import send_booking_confirmation_emails
@@ -34,7 +34,7 @@ class AvailabilitySlotSerializer(serializers.ModelSerializer):
     class Meta:
         model = AvailabilitySlot
         fields = [
-            'id', 'date', 'start_time', 'end_time', 'slot_type', 'is_booked',
+            'id', 'date', 'start_time', 'end_time', 'slot_type', 'pricing_mode', 'is_booked',
             'online_price', 'offline_price', 'offline_payment_required', 'offline_location', 'price'
         ]
 
@@ -48,22 +48,20 @@ class AvailabilitySlotSerializer(serializers.ModelSerializer):
         profile = self._get_profile(obj)
         if not profile:
             return 0.0
-        val = profile.online_price or profile.pending_online_price or 0.0
+        val = profile.online_price or 0.0
         return float(val)
 
     def get_offline_price(self, obj):
         profile = self._get_profile(obj)
         if not profile:
             return 0.0
-        val = profile.offline_price or profile.pending_offline_price or 0.0
+        val = profile.offline_price or 0.0
         return float(val)
 
     def get_offline_payment_required(self, obj):
         profile = self._get_profile(obj)
         if not profile:
             return True
-        if profile.pending_offline_payment_required is not None:
-            return profile.pending_offline_payment_required
         return profile.offline_payment_required
 
     def get_offline_location(self, obj):
@@ -85,10 +83,15 @@ class AvailabilitySlotCreateSerializer(serializers.ModelSerializer):
         default="BOTH",
         required=False,
     )
+    pricing_mode = serializers.ChoiceField(
+        choices=AvailabilitySlot.PRICING_MODE,
+        default="FIXED",
+        required=False,
+    )
 
     class Meta:
         model = AvailabilitySlot
-        fields = ['date', 'start_time', 'end_time', 'slot_type']
+        fields = ['date', 'start_time', 'end_time', 'slot_type', 'pricing_mode']
 
     def validate(self, data):
         date = data.get("date")
@@ -117,6 +120,16 @@ class AppointmentCreateSerializer(serializers.Serializer):
         required=False,
         allow_null=True
     )
+    patient_case_summary = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default=""
+    )
+    patient_medical_conditions = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        default=list
+    )
 
     def validate(self, data):
         request = self.context["request"]
@@ -142,8 +155,18 @@ class AppointmentCreateSerializer(serializers.Serializer):
         # 🔒 IN-HOUSE FLOW (SYSTEM ASSIGNED)
         if data["appointment_category"] == "IN_HOUSE":
             assignment = PatientAssignment.objects.select_related(
-                "nutritionist"
-            ).filter(patient=user).first()
+                "nutritionist", "nutritionist__nutritionist_profile"
+            ).filter(
+                patient=user,
+                nutritionist__nutritionist_profile__nutritionist_type=NutritionistProfile.NutritionistType.INHOUSE
+            ).first()
+
+            if not assignment:
+                assignment = PatientAssignment.objects.select_related(
+                    "nutritionist", "nutritionist__nutritionist_profile"
+                ).filter(patient=user).exclude(
+                    nutritionist__nutritionist_profile__nutritionist_type=NutritionistProfile.NutritionistType.EXPERT
+                ).first()
 
             if not assignment:
                 # Automatically assign the slot's nutritionist to the patient
@@ -181,17 +204,14 @@ class AppointmentCreateSerializer(serializers.Serializer):
         real_price = 0.0
         if nutri_profile:
             if appointment_type == "IN_PERSON":
-                real_price = float(nutri_profile.offline_price or nutri_profile.pending_offline_price or 0.0)
+                real_price = float(nutri_profile.offline_price or 0.0)
             else:
-                real_price = float(nutri_profile.online_price or nutri_profile.pending_online_price or 0.0)
+                real_price = float(nutri_profile.online_price or 0.0)
 
-        # Determine offline payment policy: if pending setting exists, use that; otherwise profile setting (default True)
+        # Determine offline payment policy
         offline_payment_required = True
         if nutri_profile:
-            if nutri_profile.pending_offline_payment_required is not None:
-                offline_payment_required = nutri_profile.pending_offline_payment_required
-            else:
-                offline_payment_required = getattr(nutri_profile, "offline_payment_required", True)
+            offline_payment_required = getattr(nutri_profile, "offline_payment_required", True)
 
         # Check if offline payment is allowed later (at clinic / cash)
         is_offline_pay_later = (appointment_type == "IN_PERSON" and not offline_payment_required)
@@ -208,8 +228,10 @@ class AppointmentCreateSerializer(serializers.Serializer):
             elif consult_type == "expert" and subscription.remaining_expert > 0:
                 consumed_quota = True
 
+        is_variable_slot = (getattr(slot, "pricing_mode", "FIXED") == "VARIABLE" and category == "EXPERT")
+
         # If user does NOT have quota, AND upfront payment IS required (not offline pay-later and real_price > 0):
-        if not consumed_quota and not is_offline_pay_later and real_price > 0:
+        if not is_variable_slot and not consumed_quota and not is_offline_pay_later and real_price > 0:
             raise serializers.ValidationError({
                 "consultation_required": True,
                 "consult_type": consult_type,
@@ -230,8 +252,18 @@ class AppointmentCreateSerializer(serializers.Serializer):
 
             if category == "IN_HOUSE":
                 assignment = PatientAssignment.objects.select_related(
-                    "nutritionist"
-                ).filter(patient=user).first()
+                    "nutritionist", "nutritionist__nutritionist_profile"
+                ).filter(
+                    patient=user,
+                    nutritionist__nutritionist_profile__nutritionist_type=NutritionistProfile.NutritionistType.INHOUSE
+                ).first()
+
+                if not assignment:
+                    assignment = PatientAssignment.objects.select_related(
+                        "nutritionist", "nutritionist__nutritionist_profile"
+                    ).filter(patient=user).exclude(
+                        nutritionist__nutritionist_profile__nutritionist_type=NutritionistProfile.NutritionistType.EXPERT
+                    ).first()
 
                 if assignment:
                     nutritionist = assignment.nutritionist
@@ -249,8 +281,8 @@ class AppointmentCreateSerializer(serializers.Serializer):
 
             meeting_link = None
 
-            # 🔥 ZOOM INTEGRATION (Virtual Consultation Link Generated at Booking Time)
-            if appointment_type == "VIRTUAL":
+            # 🔥 ZOOM INTEGRATION (Virtual Consultation Link Generated at Booking Time for instant slots)
+            if not is_variable_slot and appointment_type == "VIRTUAL":
                 try:
                     appointment_start = timezone.make_aware(
                         datetime.combine(slot.date, slot.start_time)
@@ -276,21 +308,29 @@ class AppointmentCreateSerializer(serializers.Serializer):
                     print(f"⚠️ Zoom link generation error: {e}")
                     meeting_link = f"https://zoom.us/j/trackintake-{slot.id}"
 
-            # Calculate financial parameters
-            fee_amount = real_price
-            payout_amount = real_price
-
-            if is_offline_pay_later and not consumed_quota:
-                # In-Person where patient pays cash/card directly at the clinic to nutritionist
+            # Calculate financial parameters based on slot type
+            if is_variable_slot:
+                fee_amount = 0.00
+                payout_amount = 0.00
                 payment_status = "UNPAID"
                 payout_status = "NOT_APPLICABLE"
-                payout_amount = 0.00
+                appointment_status = "PENDING_REVIEW"
             else:
-                # All platform payments (virtual consultations, or clinic visits requiring online payment, or plan quota consumed)
-                # Revenue is collected by platform, so Admin owes payout to the nutritionist
-                payment_status = "PAID"
-                payout_status = "PENDING"
+                appointment_status = "CONFIRMED"
+                fee_amount = real_price
                 payout_amount = real_price
+
+                if is_offline_pay_later and not consumed_quota:
+                    # In-Person where patient pays cash/card directly at the clinic to nutritionist
+                    payment_status = "UNPAID"
+                    payout_status = "NOT_APPLICABLE"
+                    payout_amount = 0.00
+                else:
+                    # All platform payments (virtual consultations, or clinic visits requiring online payment, or plan quota consumed)
+                    # Revenue is collected by platform, so Admin owes payout to the nutritionist
+                    payment_status = "PAID"
+                    payout_status = "PENDING"
+                    payout_amount = real_price
 
             # ✅ CREATE APPOINTMENT WITH LINK & SNAPSHOTS
             appointment = Appointment.objects.create(
@@ -309,33 +349,49 @@ class AppointmentCreateSerializer(serializers.Serializer):
                 payment_status=payment_status,
                 payout_status=payout_status,
                 payout_amount=payout_amount,
+                status=appointment_status,
+                pricing_mode="VARIABLE" if is_variable_slot else "FIXED",
+                patient_case_summary=validated_data.get("patient_case_summary", ""),
+                patient_medical_conditions=validated_data.get("patient_medical_conditions", []),
             )
 
-            if consumed_quota:
-                consume_consultation(user=user, consult_type=consult_type)
+            if not is_variable_slot:
+                if consumed_quota:
+                    consume_consultation(user=user, consult_type=consult_type)
 
-            appointment_start = timezone.make_aware(
-                datetime.combine(slot.date, slot.start_time)
-            )
-
-            AppointmentReminder.objects.bulk_create([
-                AppointmentReminder(
-                    appointment=appointment,
-                    remind_at=appointment_start - timedelta(hours=24),
-                    reminder_type="24H"
-                ),
-                AppointmentReminder(
-                    appointment=appointment,
-                    remind_at=appointment_start - timedelta(hours=2),
-                    reminder_type="2H"
+                appointment_start = timezone.make_aware(
+                    datetime.combine(slot.date, slot.start_time)
                 )
-            ])
 
-            # 📧 Send booking confirmation emails asynchronously to both patient & nutritionist
+                AppointmentReminder.objects.bulk_create([
+                    AppointmentReminder(
+                        appointment=appointment,
+                        remind_at=appointment_start - timedelta(hours=24),
+                        reminder_type="24H"
+                    ),
+                    AppointmentReminder(
+                        appointment=appointment,
+                        remind_at=appointment_start - timedelta(hours=2),
+                        reminder_type="2H"
+                    )
+                ])
+
+                # Ensure patient assignment exists so the expert can review logs and manage diet
+                if category == "EXPERT" and selected_expert:
+                    try:
+                        PatientAssignment.objects.get_or_create(
+                            patient=user,
+                            nutritionist=selected_expert
+                        )
+                    except Exception as e:
+                        print(f"⚠️ PatientAssignment creation note: {e}")
+
+            # 📧 Dispatch unified In-App DB record, real-time WebSocket Channels event, and Gmail confirmation
             try:
-                send_booking_confirmation_emails(appointment)
+                from .notification_utils import notify_appointment_booked_or_confirmed
+                transaction.on_commit(lambda: notify_appointment_booked_or_confirmed(appointment))
             except Exception as e:
-                print(f"⚠️ Failed to send booking confirmation email: {e}")
+                print(f"⚠️ Failed to dispatch appointment notifications: {e}")
 
         return appointment
 
@@ -380,6 +436,7 @@ class NutritionistSlotSerializer(serializers.ModelSerializer):
             "start_time",
             "end_time",
             "slot_type",
+            "pricing_mode",
             "is_booked",
             "patient",
             "appointment",
@@ -392,10 +449,15 @@ class NutritionistSlotSerializer(serializers.ModelSerializer):
     def get_patient(self, obj):
         appt = getattr(obj, "appointment", None)
         if obj.is_booked and appt and appt.patient:
+            p = appt.patient
+            profile = getattr(p, "userprofile", None) or getattr(p, "user_profile", None) or getattr(p, "profile", None)
             return {
-                "id": appt.patient.id,
-                "name": appt.patient.full_name,
-                "email": appt.patient.email,
+                "id": p.id,
+                "name": p.full_name or p.username,
+                "email": p.email,
+                "phone": getattr(profile, "mobile_number", None) or getattr(profile, "phone_number", None) or getattr(p, "phone_number", "") or "",
+                "gender": getattr(profile, "gender", "") or "",
+                "goal": getattr(profile, "goal", "") or getattr(profile, "health_goal", "") or "",
             }
         return None
 
@@ -413,6 +475,12 @@ class NutritionistSlotSerializer(serializers.ModelSerializer):
                 "notes": getattr(appt, "notes", ""),
                 "instructions": getattr(appt, "instructions", ""),
                 "feedbacks": feedbacks,
+                "pricing_mode": getattr(appt, "pricing_mode", "FIXED"),
+                "patient_case_summary": getattr(appt, "patient_case_summary", "") or "",
+                "patient_medical_conditions": getattr(appt, "patient_medical_conditions", []) or [],
+                "fee_amount": float(appt.fee_amount) if appt.fee_amount is not None else 0.0,
+                "payment_status": appt.payment_status,
+                "nutritionist_quote_note": getattr(appt, "nutritionist_quote_note", "") or "",
             }
         return None
 
@@ -508,6 +576,12 @@ class AppointmentListSerializer(serializers.ModelSerializer):
             "refund_amount",
             "refund_notes",
             "refunded_at",
+            # Case Review & Quoting
+            "pricing_mode",
+            "patient_case_summary",
+            "patient_medical_conditions",
+            "price_quoted_at",
+            "nutritionist_quote_note",
             # Rescheduling
             "reschedule_count",
             "rescheduled_at",
@@ -641,6 +715,12 @@ class AppointmentDetailSerializer(serializers.ModelSerializer):
             "refund_amount",
             "refund_notes",
             "refunded_at",
+            # Case Review & Quoting
+            "pricing_mode",
+            "patient_case_summary",
+            "patient_medical_conditions",
+            "price_quoted_at",
+            "nutritionist_quote_note",
             # Rescheduling
             "reschedule_count",
             "rescheduled_at",
@@ -723,22 +803,69 @@ class AppointmentDetailSerializer(serializers.ModelSerializer):
 
     def get_patient_details(self, obj):
         p = obj.patient
-        profile = getattr(p, "user_profile", None) or getattr(p, "profile", None)
+        profile = getattr(p, "userprofile", None) or getattr(p, "user_profile", None) or getattr(p, "profile", None)
+
+        age = None
+        dob = getattr(profile, "date_of_birth", None)
+        if dob:
+            today = timezone.localdate()
+            age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+        height_cm = getattr(profile, "height_cm", None)
+        weight_kg = getattr(profile, "weight_kg", None)
+        bmi = None
+        bmi_status = None
+        if height_cm and weight_kg and float(height_cm) > 0:
+            try:
+                bmi = round(float(weight_kg) / ((float(height_cm) / 100) ** 2), 1)
+                if bmi < 18.5:
+                    bmi_status = "Underweight"
+                elif bmi < 25.0:
+                    bmi_status = "Normal Weight"
+                elif bmi < 30.0:
+                    bmi_status = "Overweight"
+                else:
+                    bmi_status = "Obese"
+            except Exception:
+                pass
+
+        # Comprehensive diagnosed conditions & clinical flags
+        diagnosed_conditions = []
+        if getattr(profile, "is_diabetic", False): diagnosed_conditions.append("Diabetes")
+        if getattr(profile, "is_hypertensive", False): diagnosed_conditions.append("Hypertension")
+        if getattr(profile, "has_heart_condition", False): diagnosed_conditions.append("Heart Condition")
+        if getattr(profile, "has_thyroid_disorder", False): diagnosed_conditions.append("Thyroid Disorder")
+        if getattr(profile, "has_arthritis", False): diagnosed_conditions.append("Arthritis")
+        if getattr(profile, "has_gastric_issues", False): diagnosed_conditions.append("Gastric / GERD / IBS")
+        if getattr(profile, "is_pregnant", False): diagnosed_conditions.append("Pregnant")
+        if getattr(profile, "is_breastfeeding", False): diagnosed_conditions.append("Breastfeeding")
+        other_cond = getattr(profile, "other_chronic_condition", "")
+        if other_cond and other_cond not in diagnosed_conditions:
+            diagnosed_conditions.append(other_cond)
+
         return {
             "id": p.id,
             "name": p.full_name or p.username,
             "email": p.email,
-            "phone": getattr(profile, "phone_number", None) or getattr(p, "phone_number", "") or "",
+            "phone": getattr(profile, "mobile_number", None) or getattr(profile, "phone_number", None) or getattr(p, "phone_number", "") or "",
             "gender": getattr(profile, "gender", "") or "",
-            "age": getattr(profile, "age", "") or "",
-            "goal": getattr(profile, "health_goal", "") or getattr(profile, "goal", "") or "",
-            "allergies": getattr(profile, "allergies", []) if profile else [],
-            "medical_conditions": getattr(profile, "medical_conditions", []) if profile else [],
+            "age": age or getattr(profile, "age", "") or "",
+            "height_cm": height_cm,
+            "weight_kg": weight_kg,
+            "bmi": bmi,
+            "bmi_status": bmi_status,
+            "activity_level": getattr(profile, "activity_level", "") or "",
+            "diet_type": getattr(profile, "diet_type", "") or "",
+            "goal": getattr(profile, "goal", "") or getattr(profile, "health_goal", "") or "",
+            "allergies": getattr(profile, "allergies", "") or "",
+            "diagnosed_conditions": diagnosed_conditions,
         }
 
     def get_nutritionist_details(self, obj):
         n = obj.nutritionist
         profile = getattr(n, "nutritionist_profile", None)
+        from user.serializers import sanitize_json_string_list
+        photo_url = profile.profile_photo.url if profile and profile.profile_photo else None
         return {
             "id": n.id,
             "name": n.full_name or n.username,
@@ -746,6 +873,12 @@ class AppointmentDetailSerializer(serializers.ModelSerializer):
             "professional_title": getattr(profile, "professional_title", "Clinical Nutritionist") if profile else "Clinical Nutritionist",
             "qualification": getattr(profile, "qualification", "") if profile else "",
             "years_of_experience": getattr(profile, "years_of_experience", 0) if profile else 0,
+            "professional_bio": getattr(profile, "professional_bio", "") if profile else "",
+            "current_organization": getattr(profile, "current_organization", "") if profile else "",
+            "specializations": sanitize_json_string_list(profile.specializations) if profile else [],
+            "languages_spoken": sanitize_json_string_list(profile.languages_spoken) if profile else [],
+            "profile_photo": photo_url,
+            "nutritionist_type": getattr(profile, "nutritionist_type", "inhouse") if profile else "inhouse",
             "offline_location": getattr(profile, "offline_location", "") if profile else "",
             "online_price": float(profile.online_price) if profile and profile.online_price is not None else 0.0,
             "offline_price": float(profile.offline_price) if profile and profile.offline_price is not None else 0.0,
@@ -825,5 +958,24 @@ class AppointmentNotesUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Appointment
         fields = ["notes", "instructions"]
+
+
+class AppointmentNotificationSerializer(serializers.ModelSerializer):
+    appointment_id = serializers.IntegerField(source="appointment.id", read_only=True, allow_null=True)
+    status = serializers.CharField(source="appointment.status", read_only=True, allow_null=True)
+
+    class Meta:
+        model = AppointmentNotification
+        fields = [
+            "id",
+            "appointment_id",
+            "status",
+            "notification_type",
+            "title",
+            "message",
+            "is_read",
+            "created_at",
+        ]
+
 
 

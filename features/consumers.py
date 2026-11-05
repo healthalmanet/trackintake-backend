@@ -71,6 +71,23 @@ class ReminderConsumer(AsyncWebsocketConsumer):
         """No-op to prevent crash if message event is sent to shared group."""
         pass
 
+    async def send_appointment_notification(self, event):
+        try:
+            await self.send(text_data=json.dumps({
+                "type": "appointment_notification",
+                "id": event.get("notification_id") or event.get("id"),
+                "title": event.get("title", "Appointment Update"),
+                "text": event.get("text") or event.get("message"),
+                "message": event.get("message") or event.get("text"),
+                "appointment_id": event.get("appointment_id"),
+                "appointment_status": event.get("appointment_status"),
+                "notification_type": event.get("notification_type"),
+                "timestamp": event.get("timestamp"),
+                "is_read": False,
+            }))
+        except Exception as e:
+            logger.error(f"❌ Error sending appointment notification on ReminderConsumer: {e}")
+
 
 class MessageConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -146,3 +163,20 @@ class MessageConsumer(AsyncWebsocketConsumer):
     async def send_reminder(self, event):
         """No-op to prevent crash if reminder event is sent to shared group."""
         pass
+
+    async def send_appointment_notification(self, event):
+        try:
+            await self.send(text_data=json.dumps({
+                "type": "appointment_notification",
+                "id": event.get("notification_id") or event.get("id"),
+                "title": event.get("title", "Appointment Update"),
+                "text": event.get("text") or event.get("message"),
+                "message": event.get("message") or event.get("text"),
+                "appointment_id": event.get("appointment_id"),
+                "appointment_status": event.get("appointment_status"),
+                "notification_type": event.get("notification_type"),
+                "timestamp": event.get("timestamp"),
+                "is_read": False,
+            }))
+        except Exception as e:
+            logger.error(f"❌ Error sending appointment notification on MessageConsumer: {e}")

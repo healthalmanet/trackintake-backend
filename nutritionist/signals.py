@@ -8,7 +8,15 @@ DEFAULT_NUTRITIONIST_EMAIL = "dr.rohansharma@gmail.com"
 @receiver(post_save, sender=User)
 def create_nutritionist_profile(sender, instance, created, **kwargs):
     if created and instance.role == 'nutritionist':
-        NutritionistProfile.objects.get_or_create(user=instance)
+        from .models import InHousePricingConfig
+        config = InHousePricingConfig.objects.first()
+        defaults = {}
+        if config:
+            defaults = {
+                'online_price': config.online_price,
+                'offline_price': config.offline_price,
+            }
+        NutritionistProfile.objects.get_or_create(user=instance, defaults=defaults)
 
 @receiver(post_save, sender=User)
 def auto_assign_default_nutritionist(sender, instance, created, **kwargs):

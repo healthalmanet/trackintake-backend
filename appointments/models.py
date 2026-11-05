@@ -162,6 +162,11 @@ class AvailabilitySlot(models.Model):
         ("BOTH", "Both (Virtual & In-Clinic)"),
     )
 
+    PRICING_MODE = (
+        ("FIXED", "Fixed Price (Instant Booking)"),
+        ("VARIABLE", "Variable Price (Case Review First)"),
+    )
+
     nutritionist = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -176,6 +181,12 @@ class AvailabilitySlot(models.Model):
         max_length=20,
         choices=SLOT_TYPE,
         default="BOTH",
+        db_index=True,
+    )
+    pricing_mode = models.CharField(
+        max_length=20,
+        choices=PRICING_MODE,
+        default="FIXED",
         db_index=True,
     )
 
@@ -226,12 +237,12 @@ class AvailabilitySlot(models.Model):
         Backwards compatible with slot.appointment usage across the codebase.
         """
         if hasattr(self, "_prefetched_objects_cache") and "appointments" in self._prefetched_objects_cache:
-            confirmed = [a for a in self.appointments.all() if a.status == "CONFIRMED"]
-            if confirmed:
-                return confirmed[0]
+            active = [a for a in self.appointments.all() if a.status in ("CONFIRMED", "PENDING_REVIEW", "AWAITING_PAYMENT")]
+            if active:
+                return active[0]
             all_appts = list(self.appointments.all())
             return all_appts[0] if all_appts else None
-        return self.appointments.filter(status="CONFIRMED").first() or self.appointments.first()
+        return self.appointments.filter(status__in=["CONFIRMED", "PENDING_REVIEW", "AWAITING_PAYMENT"]).first() or self.appointments.first()
 
 
 # ======================================================
@@ -250,7 +261,10 @@ class Appointment(models.Model):
     )
 
     STATUS = (
+        ("PENDING_REVIEW", "Pending Nutritionist Review"),
+        ("AWAITING_PAYMENT", "Awaiting Patient Payment"),
         ("CONFIRMED", "Confirmed"),
+        ("DECLINED", "Declined by Expert"),
         ("CANCELLED", "Cancelled"),
     )
 
@@ -348,6 +362,30 @@ class Appointment(models.Model):
     # 📝 Clinical notes / observations and dietary advice given by nutritionist
     notes = models.TextField(blank=True, default="")
     instructions = models.TextField(blank=True, default="")
+
+    # 📋 Case-Based Pricing & Review for Variable Expert Appointments
+    pricing_mode = models.CharField(
+        max_length=20,
+        choices=AvailabilitySlot.PRICING_MODE,
+        default="FIXED",
+        db_index=True,
+    )
+    patient_case_summary = models.TextField(
+        blank=True,
+        default="",
+        help_text="Patient's primary health concern, symptoms, and medical background",
+    )
+    patient_medical_conditions = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of diagnosed conditions e.g. ['Diabetes', 'PCOS']",
+    )
+    price_quoted_at = models.DateTimeField(null=True, blank=True)
+    nutritionist_quote_note = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional note from nutritionist explaining fee/treatment scope",
+    )
 
     # ❌ Cancellation & Refund tracking
     cancelled_by = models.CharField(
@@ -553,3 +591,46 @@ class PendingPayoutAppointment(Appointment):
         proxy = True
         verbose_name = "Pending Practitioner Payout"
         verbose_name_plural = "Pending Practitioner Payouts (Whom to Pay)"
+
+
+# ======================================================
+# In-App Persistent Notifications for Appointments
+# ======================================================
+class AppointmentNotification(models.Model):
+    class NotificationType(models.TextChoices):
+        BOOKED = "appointment_booked", "Appointment Booked"
+        CASE_REQUESTED = "case_requested", "New Case Intake Request"
+        FEE_QUOTED = "fee_quoted", "Consultation Fee Quoted"
+        DECLINED = "case_declined", "Case Request Declined"
+        CONFIRMED = "appointment_confirmed", "Appointment Confirmed"
+        CANCELLED = "appointment_cancelled", "Appointment Cancelled"
+
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="appointment_notifications",
+        db_index=True,
+    )
+    appointment = models.ForeignKey(
+        Appointment,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+        null=True,
+        blank=True,
+    )
+    notification_type = models.CharField(
+        max_length=50,
+        choices=NotificationType.choices,
+        default=NotificationType.BOOKED,
+        db_index=True,
+    )
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+    is_read = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[{self.notification_type}] {self.recipient.email}: {self.title}"

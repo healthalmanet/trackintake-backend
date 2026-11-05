@@ -101,9 +101,18 @@ from .views import (
     ExpertNutritionistListView,
     SubmitFeedbackView,
     MarkAppointmentPaidView,
+    SetAppointmentPriceView,
+    DeclineAppointmentCaseView,
+    ConfirmQuotedPaymentView,
+    AppointmentNotificationListView,
+    MarkAppointmentNotificationReadView,
 )
 
 urlpatterns = [
+    # In-App Notifications
+    path("notifications/", AppointmentNotificationListView.as_view(), name="appointment-notifications"),
+    path("notifications/mark-read/", MarkAppointmentNotificationReadView.as_view(), name="appointment-notifications-mark-read"),
+
     # Patient & General Appointment
     path("nutritionist/<int:nutritionist_id>/slots/", AvailableSlotsView.as_view()),
     path("book/", BookAppointmentView.as_view()),
@@ -130,4 +139,12 @@ urlpatterns = [
     path("<int:pk>/mark-paid/", MarkAppointmentPaidView.as_view(), name="mark-appointment-paid"),
     path("appointments/<int:pk>/mark-paid/", MarkAppointmentPaidView.as_view()),
     path("<int:appointment_id>/feedback/", SubmitFeedbackView.as_view(), name="submit-feedback"),
+
+    # Two-step variable case appointments: Quoting, Declining & Quoted Payment Confirmation
+    path("appointments/<int:pk>/set-price/", SetAppointmentPriceView.as_view(), name="set-appointment-price"),
+    path("<int:pk>/set-price/", SetAppointmentPriceView.as_view()),
+    path("appointments/<int:pk>/decline-case/", DeclineAppointmentCaseView.as_view(), name="decline-appointment-case"),
+    path("<int:pk>/decline-case/", DeclineAppointmentCaseView.as_view()),
+    path("appointments/<int:pk>/confirm-payment/", ConfirmQuotedPaymentView.as_view(), name="confirm-quoted-payment"),
+    path("<int:pk>/confirm-payment/", ConfirmQuotedPaymentView.as_view()),
 ]

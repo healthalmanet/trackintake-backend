@@ -277,35 +277,20 @@ class CustomUserAdmin(BaseUserAdmin):
 
     def get_search_results(self, request, queryset, search_term):
         """
-        THIS IS THE CORRECT IMPLEMENTATION.
-        It filters autocomplete results for Users.
+        Filters autocomplete results for Users.
+        In the dual-tier model, patients can be assigned to an In-House nutritionist
+        AND a Specialist Expert nutritionist.
         """
         queryset, use_distinct = super().get_search_results(request, queryset, search_term)
 
-        # We only apply this special filtering if the autocomplete request
-        # is coming from the PatientAssignment form.
+        # Autocomplete when searching for users in PatientAssignment form
         if request.GET.get('model_name') == 'patientassignment':
-            
-            # Get all patient IDs that are already in an assignment
-            assigned_patient_ids = list(PatientAssignment.objects.values_list('patient_id', flat=True))
-
-            # On the "change" form, we must allow the currently selected patient to appear.
-            # We determine this by checking the page URL that made the request.
-            referer = request.META.get('HTTP_REFERER')
-            if referer:
-                match = re.search(r'/patientassignment/(\d+)/change', referer)
-                if match:
-                    try:
-                        assignment_id = match.group(1)
-                        assignment_being_edited = PatientAssignment.objects.get(pk=assignment_id)
-                        # Remove the current patient from the list of assigned IDs to exclude
-                        if assignment_being_edited.patient_id in assigned_patient_ids:
-                            assigned_patient_ids.remove(assignment_being_edited.patient_id)
-                    except PatientAssignment.DoesNotExist:
-                        pass # Should not happen, but good to be safe
-            
-            # Exclude all other assigned patients from the search results
-            queryset = queryset.exclude(id__in=assigned_patient_ids)
+            # Only patients (role='user') should be selectable as patients
+            field_name = request.GET.get('field_name')
+            if field_name == 'patient':
+                queryset = queryset.filter(role='user')
+            elif field_name == 'nutritionist':
+                queryset = queryset.filter(role='nutritionist')
 
         return queryset, use_distinct
 
@@ -329,11 +314,15 @@ class FoodItemAdmin(admin.ModelAdmin):
 class PatientAssignmentAdmin(admin.ModelAdmin):
     """
     Custom admin view for Patient Assignments.
-    The filtering logic is now correctly placed in CustomUserAdmin.
+    Supports assigning a patient to both In-House and Specialist Expert nutritionists.
     """
-    list_display = ('patient', 'nutritionist', 'assigned_at')
-    search_fields = ('patient__full_name', 'patient__email', 'nutritionist__full_name')
-    list_filter = ('nutritionist', 'assigned_at')
+    list_display = ('patient', 'nutritionist', 'nutritionist_tier', 'assigned_at')
+    search_fields = ('patient__full_name', 'patient__email', 'nutritionist__full_name', 'nutritionist__email')
+    list_filter = (
+        'nutritionist__nutritionist_profile__nutritionist_type',
+        'nutritionist',
+        'assigned_at'
+    )
     autocomplete_fields = ['patient', 'nutritionist']
 
     fieldsets = (
@@ -341,8 +330,13 @@ class PatientAssignmentAdmin(admin.ModelAdmin):
             'fields': ('patient', 'nutritionist', 'assigned_at')
         }),
     )
-    
-    # NOTE: The get_search_results method is NOT needed here. It is now in CustomUserAdmin.
+
+    def nutritionist_tier(self, obj):
+        profile = getattr(obj.nutritionist, 'nutritionist_profile', None)
+        if profile and getattr(profile, 'nutritionist_type', None) == 'expert':
+            return "⭐ Specialist Expert"
+        return "🏢 In-House"
+    nutritionist_tier.short_description = "Practitioner Tier"
 
     def save_model(self, request, obj, form, change):
         if not obj.pk and not obj.nutritionist_id:

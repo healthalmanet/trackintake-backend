@@ -27,9 +27,10 @@ class AvailabilitySlotAdmin(admin.ModelAdmin):
         "start_time",
         "end_time",
         "slot_type",
+        "pricing_mode",
         "is_booked",
     )
-    list_filter = ("nutritionist", "date", "slot_type", "is_booked")
+    list_filter = ("nutritionist", "date", "slot_type", "pricing_mode", "is_booked")
     search_fields = ("nutritionist__email", "nutritionist__full_name")
 
     fieldsets = (
@@ -38,7 +39,7 @@ class AvailabilitySlotAdmin(admin.ModelAdmin):
                 "nutritionist",
                 "date",
                 ("start_time", "end_time"),
-                "slot_type",
+                ("slot_type", "pricing_mode"),
                 "slot_duration",
                 "is_booked",
             )
@@ -94,6 +95,7 @@ class AppointmentAdmin(admin.ModelAdmin):
 
     list_filter = (
         "status",
+        "pricing_mode",
         "payment_status",
         "payout_status",
         "appointment_type",
@@ -160,6 +162,14 @@ class AppointmentAdmin(admin.ModelAdmin):
                 ("payout_marked_at", "payout_transaction_ref"),
             )
         }),
+        ("Case Review & Variable Quoted Pricing", {
+            "fields": (
+                "pricing_mode",
+                "patient_case_summary",
+                "patient_medical_conditions",
+                ("price_quoted_at", "nutritionist_quote_note"),
+            )
+        }),
         ("Clinical Advice & Notes", {
             "classes": ("collapse",),
             "fields": ("notes", "instructions"),
@@ -213,6 +223,12 @@ class AppointmentAdmin(admin.ModelAdmin):
     def status_badge(self, obj):
         if obj.status == "CONFIRMED":
             return format_html("<span style='background-color: #dcfce7; color: #166534; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;'>Confirmed</span>")
+        elif obj.status == "PENDING_REVIEW":
+            return format_html("<span style='background-color: #fef3c7; color: #92400e; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;'>Pending Review</span>")
+        elif obj.status == "AWAITING_PAYMENT":
+            return format_html("<span style='background-color: #e0e7ff; color: #3730a3; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;'>Awaiting Payment</span>")
+        elif obj.status == "DECLINED":
+            return format_html("<span style='background-color: #f3f4f6; color: #4b5563; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;'>Declined</span>")
         actor = f" by {obj.cancelled_by}" if obj.cancelled_by else ""
         return format_html("<span style='background-color: #fee2e2; color: #991b1b; padding: 3px 8px; border-radius: 9999px; font-weight: bold; font-size: 11px;'>Cancelled{}</span>", actor)
     status_badge.short_description = "Status"

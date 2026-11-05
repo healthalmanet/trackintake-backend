@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils import timezone
 from django.utils.html import format_html
-from .models import NutritionistProfile
+from .models import NutritionistProfile, InHousePricingConfig
 
 
 @admin.register(NutritionistProfile)
@@ -30,7 +30,7 @@ class NutritionistProfileAdmin(admin.ModelAdmin):
         "created_at",
     )
     search_fields = ("user__email", "user__full_name", "user__phone_number", "offline_location")
-    list_editable = ("is_verified",)
+    list_editable = ("is_verified", "online_price", "offline_price")
     readonly_fields = (
         "verified_at",
         "created_at",
@@ -389,3 +389,65 @@ class NutritionistProfileAdmin(admin.ModelAdmin):
                 print(f"Failed to send notification: {e}")
 
         self.message_user(request, f"Rejected pricing for {count} nutritionist(s) and sent notifications.")
+
+
+@admin.register(InHousePricingConfig)
+class InHousePricingConfigAdmin(admin.ModelAdmin):
+    list_display = (
+        "title",
+        "get_online_rate_badge",
+        "get_offline_rate_badge",
+        "get_inhouse_practitioners_count",
+        "updated_at",
+    )
+    readonly_fields = ("updated_at", "get_inhouse_practitioners_count")
+
+    fieldsets = (
+        ("Central In-House Rate Configuration", {
+            "description": (
+                "Configure standard fixed consultation rates applied to all In-House Nutritionists centrally. "
+                "Saving this form automatically synchronizes rates across all in-house practitioner profiles in the system. "
+                "Note: Individual practitioners retain full freedom to select whether clinic visits are paid online or at clinic."
+            ),
+            "fields": (
+                "title",
+                "online_price",
+                "offline_price",
+                "auto_apply_to_all",
+                "get_inhouse_practitioners_count",
+                "updated_at",
+            )
+        }),
+    )
+
+    @admin.display(description="Online Rate")
+    def get_online_rate_badge(self, obj):
+        return format_html(
+            '<span style="background:#ea580c; color:white; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:12px;">₹{}</span>',
+            obj.online_price
+        )
+
+    @admin.display(description="In-Clinic Rate")
+    def get_offline_rate_badge(self, obj):
+        return format_html(
+            '<span style="background:#0284c7; color:white; padding:4px 10px; border-radius:6px; font-weight:bold; font-size:12px;">₹{}</span>',
+            obj.offline_price
+        )
+
+    @admin.display(description="Governed Practitioners")
+    def get_inhouse_practitioners_count(self, obj=None):
+        count = NutritionistProfile.objects.filter(
+            nutritionist_type=NutritionistProfile.NutritionistType.INHOUSE
+        ).count()
+        return format_html(
+            '<span style="font-weight:bold; font-size:13px; color:#0f172a;">{} in-house practitioner(s) governed</span>',
+            count
+        )
+
+    def has_add_permission(self, request):
+        # Keep it clean: only 1 global configuration instance needed
+        return not InHousePricingConfig.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        # Prevent accidental deletion of the central pricing policy
+        return False

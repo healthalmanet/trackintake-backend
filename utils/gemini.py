@@ -34,12 +34,15 @@ if env_path.exists():
     dotenv.load_dotenv(env_path, override=True)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-flash-lite-latest")
 
 if not GEMINI_API_KEY:
     raise RuntimeError(f"❌ GEMINI_API_KEY not found in environment variables.")
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options=types.HttpOptions(timeout=12000),
+)
 logger = logging.getLogger(__name__)
 
 
@@ -62,9 +65,6 @@ def generate_content_with_fallback(contents, config=None):
     raise last_err
 
 # Import Django models AFTER env is loaded
-
-
-client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def get_nullable_float(data: dict, key: str):
