@@ -149,3 +149,56 @@ class NutritionistProfile(models.Model):
 
     def __str__(self):
         return f"{self.user.email} ({self.get_nutritionist_type_display()})"
+
+
+class InHousePricingConfig(models.Model):
+    """
+    Central Platform In-House Consultation Pricing Configuration.
+    Allows administrators to configure standard online and offline consultation
+    fees for all In-House Nutritionists centrally in Django Admin.
+    """
+    title = models.CharField(
+        max_length=120,
+        default="Platform In-House Consultation Fees",
+        help_text="Policy title (e.g. Standard Platform In-House Rate)"
+    )
+    online_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=499.00,
+        verbose_name="Fixed Online Rate (₹)",
+        help_text="Standard consultation fee for all in-house virtual sessions"
+    )
+    offline_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=499.00,
+        verbose_name="Fixed In-Clinic Rate (₹)",
+        help_text="Standard consultation fee for all in-house in-clinic sessions"
+    )
+    auto_apply_to_all = models.BooleanField(
+        default=True,
+        verbose_name="Sync Rates Immediately to All In-House Nutritionists",
+        help_text="When saved, automatically updates all current In-House practitioner profiles with these standard fees."
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "In-House Consultation Pricing"
+        verbose_name_plural = "In-House Consultation Pricing (Fixed Global Rate)"
+
+    def __str__(self):
+        return f"{self.title}: Online ₹{self.online_price} | Offline ₹{self.offline_price}"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.auto_apply_to_all:
+            # Sync only the consultation fees to all In-House Nutritionists.
+            # Does NOT overwrite their personal clinic payment policy (pay at clinic vs online).
+            NutritionistProfile.objects.filter(
+                nutritionist_type=NutritionistProfile.NutritionistType.INHOUSE
+            ).update(
+                online_price=self.online_price,
+                offline_price=self.offline_price,
+            )
+

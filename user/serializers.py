@@ -179,6 +179,7 @@ class RegisterSerializer(serializers.ModelSerializer):
     phone_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     verification_token = serializers.CharField(write_only=True)
     role = serializers.CharField(required=False, default='user')
+    nutritionist_type = serializers.CharField(required=False, default='inhouse')
 
     # Optional Nutritionist Professional & Document Fields
     is_online_available = serializers.BooleanField(required=False, default=True)
@@ -211,6 +212,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'email', 'full_name', 'phone_number', 'password', 'verification_token', 'role',
+            'nutritionist_type',
             'is_online_available', 'is_offline_available', 'offline_location',
             'online_price', 'offline_price', 'offline_payment_required',
             'gender', 'date_of_birth', 'professional_title', 'qualification',
@@ -264,6 +266,11 @@ class RegisterSerializer(serializers.ModelSerializer):
                 val = mutable_data[f_field]
                 if val in ['', 'null', 'None', 'undefined', None] or isinstance(val, str):
                     mutable_data.pop(f_field, None)
+
+        # Sanitize nutritionist_type
+        if 'nutritionist_type' in mutable_data:
+            val = str(mutable_data['nutritionist_type']).strip().lower()
+            mutable_data['nutritionist_type'] = 'expert' if val == 'expert' else 'inhouse'
 
         # Sanitize string booleans from FormData
         for b_field in ['is_online_available', 'is_offline_available', 'offline_payment_required']:
@@ -350,6 +357,10 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         # Extract nutritionist extra fields if present
+        nutritionist_type = validated_data.pop('nutritionist_type', 'inhouse')
+        if nutritionist_type not in ('inhouse', 'expert'):
+            nutritionist_type = 'inhouse'
+
         is_online_available = validated_data.pop('is_online_available', True)
         is_offline_available = validated_data.pop('is_offline_available', False)
         offline_location = validated_data.pop('offline_location', '')
@@ -407,6 +418,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         if role == "nutritionist":
             from nutritionist.models import NutritionistProfile
             nutri_profile, _ = NutritionistProfile.objects.get_or_create(user=user)
+            nutri_profile.nutritionist_type = nutritionist_type
             nutri_profile.is_online_available = is_online_available
             nutri_profile.is_offline_available = is_offline_available
             nutri_profile.offline_location = offline_location or ""
@@ -434,18 +446,23 @@ class RegisterSerializer(serializers.ModelSerializer):
             if profile_photo:
                 nutri_profile.profile_photo = profile_photo
 
-            # Pricing requires admin approval upon registration if price > 0
-            has_price_request = (online_price and float(online_price) > 0) or (offline_price and float(offline_price) > 0)
             nutri_profile.offline_payment_required = offline_payment_required
             nutri_profile.pending_offline_payment_required = offline_payment_required
-            if has_price_request:
-                nutri_profile.pending_online_price = online_price
-                nutri_profile.pending_offline_price = offline_price
-                nutri_profile.price_approval_status = "pending"
-            else:
-                nutri_profile.online_price = online_price
-                nutri_profile.offline_price = offline_price
-                nutri_profile.price_approval_status = "approved"
+
+            # Direct pricing with validation guardrails (no manual price approval queue)
+            def _clean_price(val):
+                try:
+                    num = float(val)
+                    return max(0.0, min(num, 50000.0))
+                except (ValueError, TypeError):
+                    return 0.0
+
+            nutri_profile.online_price = _clean_price(online_price)
+            nutri_profile.offline_price = _clean_price(offline_price)
+            nutri_profile.pending_online_price = None
+            nutri_profile.pending_offline_price = None
+            nutri_profile.price_approval_status = "approved"
+            nutri_profile.price_rejection_reason = None
 
             nutri_profile.save()
 

@@ -681,31 +681,40 @@ class FoodSuggestionView(APIView):
         if delivery.get("ws_should_push") and result.get("suggestions"):
             try:
                 channel_layer = get_channel_layer()
-                top = result["suggestions"][0]
-                remaining = result["remaining_nutrients"]
-                async_to_sync(channel_layer.group_send)(
-                    f"user_{user.id}",
-                    {
-                        "type":           "send_suggestion",
-                        "message":        result.get("overall_advice") or f"💡 You still need {remaining['protein_g']:.0f}g protein today",
-                        "top_suggestion": top["food_name"],
-                        "reason":         top["reasons"][0] if top.get("reasons") else "",
-                        "calories_left":  remaining["calories"],
-                        "slot":           result.get("slot"),
-                    },
-                )
-                ws_pushed = True
+                if channel_layer:
+                    top = result["suggestions"][0]
+                    remaining = result["remaining_nutrients"]
+                    async_to_sync(channel_layer.group_send)(
+                        f"user_{user.id}",
+                        {
+                            "type":           "send_suggestion",
+                            "message":        result.get("overall_advice") or f"💡 You still need {remaining['protein_g']:.0f}g protein today",
+                            "top_suggestion": top["food_name"],
+                            "reason":         top["reasons"][0] if top.get("reasons") else "",
+                            "calories_left":  remaining["calories"],
+                            "slot":           result.get("slot"),
+                        },
+                    )
+                    ws_pushed = True
             except Exception:
                 pass  # No active WS connection — normal on Render, skip silently
+
         # ── Daily summary email (7 pm – 8 pm) ───────────────────
+        # Dispatched in a background daemon thread so the HTTP response returns immediately
+        # without waiting on external email network roundtrips.
         if delivery.get("email_should_queue"):
             try:
-                _send_daily_suggestion_email(user, result, send_resend_email)
+                import threading
+                threading.Thread(
+                    target=_send_daily_suggestion_email,
+                    args=(user, result, send_resend_email),
+                    daemon=True,
+                ).start()
                 email_q = True
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).warning(
-                    f"Suggestion email failed: {exc}")
+                    f"Suggestion email thread dispatch failed: {exc}")
 
         return Response({
             "remaining_nutrients": result["remaining_nutrients"],

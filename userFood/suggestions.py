@@ -1282,13 +1282,43 @@ def _get_plan_candidates(user):
 
 
 # ────────────────────────────────────────────────────────────────
-# SOURCE C — Gemini Fallback
+# SOURCE C — Gemini Fallback (with safe timeout)
 # ────────────────────────────────────────────────────────────────
+
+def _run_with_timeout(func, args=(), kwargs=None, timeout_sec=7.0):
+    """
+    Safely executes an external IO-bound function (like Gemini AI) in a worker
+    thread with a hard timeout. If it does not complete within timeout_sec, returns
+    None immediately without blocking the Daphne/ASGI server event loop.
+    """
+    import concurrent.futures
+    kwargs = kwargs or {}
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout_sec)
+    except concurrent.futures.TimeoutError:
+        fname = getattr(func, "__name__", str(func))
+        logger.warning(f"External call {fname} exceeded {timeout_sec}s timeout; falling back gracefully.")
+        executor.shutdown(wait=False, cancel_futures=True)
+        return None
+    except Exception as exc:
+        fname = getattr(func, "__name__", str(func))
+        logger.warning(f"External call {fname} failed: {exc}", exc_info=True)
+        executor.shutdown(wait=False, cancel_futures=True)
+        return None
+    finally:
+        try:
+            executor.shutdown(wait=False)
+        except Exception:
+            pass
+
 
 def _get_gemini_candidates(remaining, profile, meal_type=None):
     try:
         from utils.gemini import suggest_foods_gemini
-        return suggest_foods_gemini(remaining, profile, meal_type)
+        res = _run_with_timeout(suggest_foods_gemini, args=(remaining, profile, meal_type), timeout_sec=5.0)
+        return res or []
     except Exception as exc:
         logger.warning(f"Gemini suggestion fallback failed: {exc}")
         return []
@@ -1353,24 +1383,28 @@ def build_suggestions(user, meal_type=None, limit=5, period=None, slot=None) -> 
     # Build diet plan candidates
     plan_candidates, plan_reminder = _get_plan_candidates(user)
 
-    # ── PRIMARY ENGINE: Gemini AI Clinical Suggestions ──────────
+    # ── PRIMARY ENGINE: Gemini AI Clinical Suggestions (Timeout Protected) ──
     ai_result = None
     try:
         from utils.gemini import generate_ai_food_suggestions
         plan_names = [f[0].name for f in plan_candidates]
-        ai_result = generate_ai_food_suggestions(
-            user_profile=profile,
-            remaining_nutrients=remaining,
-            consumed_nutrients=nutrient_data.get("consumed"),
-            target_nutrients=nutrient_data.get("targets"),
-            goal=goal,
-            meal_type=meal_type,
-            period=period or "daily",
-            slot=slot,
-            lab_data=lab_data,
-            conditions=conditions,
-            diet_plan_items=plan_names,
-            limit=limit,
+        ai_result = _run_with_timeout(
+            generate_ai_food_suggestions,
+            kwargs={
+                "user_profile": profile,
+                "remaining_nutrients": remaining,
+                "consumed_nutrients": nutrient_data.get("consumed"),
+                "target_nutrients": nutrient_data.get("targets"),
+                "goal": goal,
+                "meal_type": meal_type,
+                "period": period or "daily",
+                "slot": slot,
+                "lab_data": lab_data,
+                "conditions": conditions,
+                "diet_plan_items": plan_names,
+                "limit": limit,
+            },
+            timeout_sec=7.0,
         )
     except Exception as exc:
         logger.warning(f"Gemini AI clinical suggestion engine failed: {exc}", exc_info=True)

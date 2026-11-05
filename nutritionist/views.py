@@ -1363,47 +1363,56 @@ class NutritionistSelfProfileView(APIView):
                 nutri_fields_to_update.append(f_name)
                 has_file_uploaded = True
 
-        # Handle Price Updates (Requires Admin Approval)
-        price_requested = False
-        if "online_price" in data and data.get("online_price") not in [None, ""]:
-            try:
-                nutri_profile.pending_online_price = float(data.get("online_price"))
-                price_requested = True
-            except (ValueError, TypeError):
-                pass
-        if "offline_price" in data and data.get("offline_price") not in [None, ""]:
-            try:
-                nutri_profile.pending_offline_price = float(data.get("offline_price"))
-                price_requested = True
-            except (ValueError, TypeError):
-                pass
+        # Consultation Rates Updates:
+        # - Specialist Experts can customize their consultation rates.
+        # - In-House Nutritionists are governed by central platform rates and cannot change fees.
+        is_expert = (nutri_profile.nutritionist_type == NutritionistProfile.NutritionistType.EXPERT)
+
+        if is_expert:
+            if "online_price" in data and data.get("online_price") not in [None, ""]:
+                try:
+                    p = float(data.get("online_price"))
+                    nutri_profile.online_price = max(0.0, min(p, 50000.0))
+                    nutri_profile.pending_online_price = None
+                    nutri_fields_to_update.extend(["online_price", "pending_online_price"])
+                except (ValueError, TypeError):
+                    pass
+            if "offline_price" in data and data.get("offline_price") not in [None, ""]:
+                try:
+                    p = float(data.get("offline_price"))
+                    nutri_profile.offline_price = max(0.0, min(p, 50000.0))
+                    nutri_profile.pending_offline_price = None
+                    nutri_fields_to_update.extend(["offline_price", "pending_offline_price"])
+                except (ValueError, TypeError):
+                    pass
+        else:
+            # Enforce central in-house platform rates for in-house practitioners
+            from .models import InHousePricingConfig
+            central_cfg = InHousePricingConfig.objects.first()
+            if central_cfg:
+                nutri_profile.online_price = central_cfg.online_price
+                nutri_profile.offline_price = central_cfg.offline_price
+                nutri_fields_to_update.extend(["online_price", "offline_price"])
+
+        # Offline Payment Settlement Option:
+        # Both In-House and Expert practitioners can choose whether clinic appointments require upfront online payment or pay-at-clinic.
         if "offline_payment_required" in data and data.get("offline_payment_required") not in [None, ""]:
             val = data.get("offline_payment_required")
             is_req = val in [True, "true", "True", 1, "1"]
             nutri_profile.offline_payment_required = is_req
-            nutri_profile.pending_offline_payment_required = is_req
+            nutri_profile.pending_offline_payment_required = None
             nutri_fields_to_update.extend(["offline_payment_required", "pending_offline_payment_required"])
 
-        if price_requested:
-            nutri_profile.price_approval_status = "pending"
-            nutri_profile.price_rejection_reason = None
-            nutri_fields_to_update.extend([
-                "pending_online_price",
-                "pending_offline_price",
-                "price_approval_status",
-                "price_rejection_reason"
-            ])
+        nutri_profile.price_approval_status = "approved"
+        nutri_profile.price_rejection_reason = None
+        nutri_fields_to_update.extend(["price_approval_status", "price_rejection_reason"])
 
         if has_file_uploaded:
             nutri_profile.save()
         elif nutri_fields_to_update:
             nutri_profile.save(update_fields=list(set(nutri_fields_to_update)))
 
-        msg = "Profile updated successfully."
-        if price_requested:
-            msg += " Your requested price changes have been submitted for Admin approval."
-
-        return Response({"message": msg}, status=status.HTTP_200_OK)
+        return Response({"message": "Profile and consultation rates updated successfully."}, status=status.HTTP_200_OK)
 
 
 class AdminNutritionistPricingListView(APIView):

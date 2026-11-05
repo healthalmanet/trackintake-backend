@@ -541,6 +541,20 @@ class PayConsultationFeeView(APIView):
 
         amount = None
 
+        # 0. Try to get price directly from existing appointment if paying for a quoted case
+        appointment_id = request.data.get("appointment_id")
+        if appointment_id:
+            try:
+                from appointments.models import Appointment
+                target_appt = Appointment.objects.get(id=appointment_id)
+                if target_appt.fee_amount and float(target_appt.fee_amount) > 0:
+                    amount = float(target_appt.fee_amount)
+                if not slot_id and target_appt.slot_id:
+                    slot_id = target_appt.slot_id
+                appointment_type = target_appt.appointment_type
+            except Exception:
+                pass
+
         # 1. Try to get price directly from slot
         if slot_id:
             try:

@@ -274,7 +274,7 @@
 
 from rest_framework.generics import ListAPIView, CreateAPIView, DestroyAPIView, RetrieveAPIView
 from rest_framework.permissions import IsAuthenticated
-from .models import AvailabilitySlot, Appointment
+from .models import AvailabilitySlot, Appointment, AppointmentNotification
 from .serializers import (
     AvailabilitySlotSerializer,
     AvailabilitySlotCreateSerializer,
@@ -285,6 +285,7 @@ from .serializers import (
     NutritionistSlotSerializer,
     AppointmentFeedbackSerializer,
     NutritionistPayoutSerializer,
+    AppointmentNotificationSerializer,
 )
 from rest_framework import status
 from django.shortcuts import get_object_or_404
@@ -320,6 +321,7 @@ class ExpertNutritionistListView(APIView):
         data = []
         for u in experts:
             profile = getattr(u, "nutritionist_profile", None)
+            photo_url = profile.profile_photo.url if profile and profile.profile_photo else None
             data.append({
                 "id": u.id,
                 "name": u.full_name or u.username,
@@ -327,13 +329,16 @@ class ExpertNutritionistListView(APIView):
                 "professional_title": profile.professional_title if profile else "Clinical Nutritionist",
                 "qualification": profile.qualification if profile else "",
                 "years_of_experience": profile.years_of_experience if profile else 0,
+                "professional_bio": profile.professional_bio if profile else "",
+                "current_organization": profile.current_organization if profile else "",
+                "profile_photo": photo_url,
                 "specializations": sanitize_json_string_list(profile.specializations) if profile else [],
                 "languages_spoken": sanitize_json_string_list(profile.languages_spoken) if profile else [],
                 "is_online_available": profile.is_online_available if profile else True,
                 "is_offline_available": profile.is_offline_available if profile else False,
-                "online_price": float(profile.online_price or profile.pending_online_price or 0.0) if profile else 0.0,
-                "offline_price": float(profile.offline_price or profile.pending_offline_price or 0.0) if profile else 0.0,
-                "offline_payment_required": profile.pending_offline_payment_required if (profile and profile.pending_offline_payment_required is not None) else (profile.offline_payment_required if profile else True),
+                "online_price": float(profile.online_price or 0.0) if profile else 0.0,
+                "offline_price": float(profile.offline_price or 0.0) if profile else 0.0,
+                "offline_payment_required": profile.offline_payment_required if profile else True,
                 "offline_location": profile.offline_location if profile else "",
             })
         return Response(data)
@@ -346,14 +351,28 @@ class MyInHouseNutritionistView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Prioritize explicit in-house assignment if multiple exist
         assignment = (
             PatientAssignment.objects.select_related(
                 "nutritionist", "nutritionist__nutritionist_profile"
             )
-            .filter(patient=request.user)
+            .filter(
+                patient=request.user,
+                nutritionist__nutritionist_profile__nutritionist_type=NutritionistProfile.NutritionistType.INHOUSE
+            )
             .order_by("-assigned_at", "-id")
             .first()
         )
+        if not assignment:
+            assignment = (
+                PatientAssignment.objects.select_related(
+                    "nutritionist", "nutritionist__nutritionist_profile"
+                )
+                .filter(patient=request.user)
+                .exclude(nutritionist__nutritionist_profile__nutritionist_type=NutritionistProfile.NutritionistType.EXPERT)
+                .order_by("-assigned_at", "-id")
+                .first()
+            )
         if not assignment:
             return Response(
                 {"detail": "No in-house nutritionist assigned"},
@@ -363,6 +382,7 @@ class MyInHouseNutritionistView(APIView):
         nutri = assignment.nutritionist
         profile = getattr(nutri, "nutritionist_profile", None)
         from user.serializers import sanitize_json_string_list
+        photo_url = profile.profile_photo.url if profile and profile.profile_photo else None
 
         return Response({
             "nutritionist_id": nutri.id,
@@ -370,13 +390,17 @@ class MyInHouseNutritionistView(APIView):
             "nutritionist_email": nutri.email,
             "professional_title": profile.professional_title if profile else "Clinical Nutritionist",
             "qualification": profile.qualification if profile else "",
+            "years_of_experience": profile.years_of_experience if profile else 0,
+            "professional_bio": profile.professional_bio if profile else "",
+            "current_organization": profile.current_organization if profile else "",
+            "profile_photo": photo_url,
             "specializations": sanitize_json_string_list(profile.specializations) if profile else [],
             "languages_spoken": sanitize_json_string_list(profile.languages_spoken) if profile else [],
             "is_online_available": profile.is_online_available if profile else True,
             "is_offline_available": profile.is_offline_available if profile else False,
-            "online_price": float(profile.online_price or profile.pending_online_price or 0.0) if profile else 0.0,
-            "offline_price": float(profile.offline_price or profile.pending_offline_price or 0.0) if profile else 0.0,
-            "offline_payment_required": profile.pending_offline_payment_required if (profile and profile.pending_offline_payment_required is not None) else (profile.offline_payment_required if profile else True),
+            "online_price": float(profile.online_price or 0.0) if profile else 0.0,
+            "offline_price": float(profile.offline_price or 0.0) if profile else 0.0,
+            "offline_payment_required": profile.offline_payment_required if profile else True,
             "offline_location": profile.offline_location if profile else "",
         })
 
@@ -522,6 +546,9 @@ class NutritionistAddAvailabilityView(APIView):
 
     def post(self, request):
         data = request.data
+        profile = getattr(request.user, "nutritionist_profile", None)
+        is_expert = bool(profile and profile.nutritionist_type == "expert")
+
         # Support both single slot and list of slots
         is_bulk = isinstance(data, list)
         
@@ -553,6 +580,10 @@ class NutritionistAddAvailabilityView(APIView):
                 d = item['date']
                 st = item['start_time']
                 et = item['end_time']
+
+                # In-house nutritionists are strictly fixed pricing only
+                if not is_expert:
+                    item['pricing_mode'] = 'FIXED'
                 
                 if d < today or (d == today and st < now_time):
                     errors.append(f"{d} {st}-{et}: Cannot create slots in the past.")
@@ -593,7 +624,6 @@ class NutritionistAddAvailabilityView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            profile = getattr(request.user, "nutritionist_profile", None)
             return Response(
                 {
                     "created_count": len(created_slots),
@@ -606,12 +636,16 @@ class NutritionistAddAvailabilityView(APIView):
             serializer = AvailabilitySlotCreateSerializer(data=data)
             if serializer.is_valid():
                 try:
+                    slot_pricing_mode = serializer.validated_data.get('pricing_mode', 'FIXED')
+                    if not is_expert:
+                        slot_pricing_mode = 'FIXED'
                     slot = serializer.save(
                         nutritionist=request.user,
-                        is_booked=False
+                        is_booked=False,
+                        pricing_mode=slot_pricing_mode,
                     )
                     return Response(
-                        AvailabilitySlotSerializer(slot).data,
+                        AvailabilitySlotSerializer(slot, context={"nutritionist_profile": profile}).data,
                         status=status.HTTP_201_CREATED
                     )
                 except Exception as e:
@@ -722,6 +756,13 @@ class CancelAppointmentView(APIView):
             send_cancellation_emails(appointment, appointment.cancelled_by, reason)
         except Exception as e:
             print(f"⚠️ Failed to send cancellation email: {e}")
+
+        # Dispatch In-App notification & real-time WebSocket Channels update to counterparty
+        try:
+            from .notification_utils import notify_appointment_cancelled
+            notify_appointment_cancelled(appointment, cancelled_by=appointment.cancelled_by, reason=reason)
+        except Exception as e:
+            print(f"⚠️ Failed to dispatch cancellation in-app notification: {e}")
 
         return Response({
             "detail": "Appointment cancelled successfully. The time slot is now available again.",
@@ -883,6 +924,17 @@ class RescheduleAppointmentView(APIView):
             )
         except Exception as e:
             print(f"⚠️ Failed to send reschedule email: {e}")
+
+        # Dispatch In-App notification & real-time WebSocket update to counterparty
+        try:
+            from .notification_utils import notify_appointment_rescheduled
+            notify_appointment_rescheduled(
+                appointment=appointment,
+                rescheduled_by_role="PATIENT" if is_patient else "NUTRITIONIST",
+                new_slot_str=new_slot_str
+            )
+        except Exception as e:
+            print(f"⚠️ Failed to dispatch reschedule notification: {e}")
 
         return Response({
             "detail": f"Appointment successfully rescheduled to {new_slot_str}.",
@@ -1268,4 +1320,281 @@ class MarkAppointmentPaidView(APIView):
             "detail": f"Payment of ₹{appointment.fee_amount} marked as collected at clinic.",
             "payment_status": "PAID",
             "appointment": AppointmentDetailSerializer(appointment, context={"request": request}).data
+        }, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────
+# 1. EXPERT SETS PRICE FOR VARIABLE CASE APPOINTMENT
+# ─────────────────────────────────────────────
+class SetAppointmentPriceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            appointment = Appointment.objects.select_related("nutritionist", "patient", "slot").get(id=pk)
+        except Appointment.DoesNotExist:
+            return Response({"detail": "Appointment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user != appointment.nutritionist and not request.user.is_staff:
+            return Response({"detail": "Only the assigned expert can quote the consultation price."}, status=status.HTTP_403_FORBIDDEN)
+
+        if appointment.status != "PENDING_REVIEW":
+            return Response({"detail": f"Cannot set price for appointment in '{appointment.status}' state."}, status=status.HTTP_400_BAD_REQUEST)
+
+        price = request.data.get("price")
+        if price is None:
+            price = request.data.get("fee_amount")
+        if price is None:
+            return Response({"detail": "Price is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            price_val = float(price)
+            if price_val < 0:
+                raise ValueError()
+        except (ValueError, TypeError):
+            return Response({"detail": "Please provide a valid price (₹0 or greater)."}, status=status.HTTP_400_BAD_REQUEST)
+
+        quote_note = str(request.data.get("quote_note") or request.data.get("note") or "").strip()
+
+        appointment.fee_amount = price_val
+        appointment.status = "AWAITING_PAYMENT"
+        appointment.price_quoted_at = timezone.now()
+        appointment.nutritionist_quote_note = quote_note
+        appointment.save(update_fields=["fee_amount", "status", "price_quoted_at", "nutritionist_quote_note"])
+
+        # Dispatch In-App notification, real-time WebSocket, and Gmail email to patient
+        try:
+            from .notification_utils import notify_fee_quoted
+            notify_fee_quoted(appointment)
+        except Exception as e:
+            print(f"⚠️ Failed to dispatch fee quote notification: {e}")
+
+        return Response({
+            "detail": f"Quote of ₹{price_val} sent to patient successfully.",
+            "appointment": AppointmentDetailSerializer(appointment, context={"request": request}).data
+        }, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────
+# 2. EXPERT DECLINES VARIABLE CASE APPOINTMENT
+# ─────────────────────────────────────────────
+class DeclineAppointmentCaseView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            appointment = Appointment.objects.select_related("nutritionist", "patient", "slot").get(id=pk)
+        except Appointment.DoesNotExist:
+            return Response({"detail": "Appointment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user != appointment.nutritionist and not request.user.is_staff:
+            return Response({"detail": "Only the assigned expert can decline this case."}, status=status.HTTP_403_FORBIDDEN)
+
+        if appointment.status not in ("PENDING_REVIEW", "AWAITING_PAYMENT"):
+            return Response({"detail": f"Cannot decline appointment in '{appointment.status}' state."}, status=status.HTTP_400_BAD_REQUEST)
+
+        reason = str(request.data.get("reason", "Declined by practitioner")).strip()
+        appointment.status = "DECLINED"
+        appointment.cancellation_reason = reason
+        appointment.save(update_fields=["status", "cancellation_reason"])
+
+        if appointment.slot:
+            appointment.slot.is_booked = False
+            appointment.slot.save(update_fields=["is_booked"])
+
+        # Dispatch In-App notification, real-time WebSocket, and Gmail email to patient
+        try:
+            from .notification_utils import notify_case_declined
+            notify_case_declined(appointment)
+        except Exception as e:
+            print(f"⚠️ Failed to dispatch case declined notification: {e}")
+
+        return Response({
+            "detail": "Case request declined.",
+            "appointment": AppointmentDetailSerializer(appointment, context={"request": request}).data
+        }, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────
+# 3. PATIENT CONFIRMS PAYMENT FOR QUOTED APPOINTMENT
+# ─────────────────────────────────────────────
+class ConfirmQuotedPaymentView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            appointment = Appointment.objects.select_related("nutritionist", "patient", "slot").get(id=pk)
+        except Appointment.DoesNotExist:
+            return Response({"detail": "Appointment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.user != appointment.patient and not request.user.is_staff:
+            return Response({"detail": "Only the patient can confirm payment for this appointment."}, status=status.HTTP_403_FORBIDDEN)
+
+        if appointment.status != "AWAITING_PAYMENT":
+            if appointment.status == "CONFIRMED" and appointment.payment_status == "PAID":
+                return Response({
+                    "detail": "Appointment is already confirmed.",
+                    "appointment": AppointmentDetailSerializer(appointment, context={"request": request}).data
+                }, status=status.HTTP_200_OK)
+            return Response({"detail": f"Appointment is not awaiting payment (status: {appointment.status})."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Generate Zoom meeting if virtual
+        meeting_link = appointment.meeting_link
+        if appointment.appointment_type == "VIRTUAL" and not meeting_link:
+            try:
+                from appointments.zoom_service import create_zoom_meeting
+                st_time = appointment.slot_start_time or (appointment.slot.start_time if appointment.slot else None)
+                end_time = appointment.slot_end_time or (appointment.slot.end_time if appointment.slot else None)
+                s_date = appointment.slot_date or (appointment.slot.date if appointment.slot else None)
+
+                if st_time and s_date:
+                    appointment_start = timezone.make_aware(datetime.combine(s_date, st_time))
+                    duration = 30
+                    if end_time:
+                        duration = int((datetime.combine(s_date, end_time) - datetime.combine(s_date, st_time)).total_seconds() / 60)
+
+                    patient_name = getattr(appointment.patient, "full_name", "") or getattr(appointment.patient, "email", "Patient")
+                    nutritionist_name = getattr(appointment.nutritionist, "full_name", "") or "Nutritionist"
+
+                    zoom_response = create_zoom_meeting(
+                        topic=f"Consultation: {patient_name} with {nutritionist_name}",
+                        start_time_str=appointment_start.isoformat(),
+                        duration=duration
+                    )
+                    meeting_link = zoom_response.get("join_url")
+            except Exception as e:
+                print(f"⚠️ Zoom link generation error: {e}")
+                meeting_link = f"https://zoom.us/j/trackintake-{appointment.id}"
+
+        pay_at_clinic = bool(request.data.get("pay_at_clinic", False))
+
+        if pay_at_clinic:
+            nutri_profile = getattr(appointment.nutritionist, "nutritionist_profile", None)
+            offline_req = True
+            if nutri_profile:
+                if nutri_profile.pending_offline_payment_required is not None:
+                    offline_req = nutri_profile.pending_offline_payment_required
+                else:
+                    offline_req = getattr(nutri_profile, "offline_payment_required", True)
+
+            if appointment.appointment_type != "IN_PERSON" or offline_req:
+                return Response(
+                    {"detail": "Pay at clinic is only permitted for eligible in-person consultations."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            appointment.payment_status = "UNPAID"
+            appointment.status = "CONFIRMED"
+        else:
+            appointment.payment_status = "PAID"
+            appointment.payout_status = "PENDING"
+            appointment.payout_amount = appointment.fee_amount
+            appointment.status = "CONFIRMED"
+
+        if meeting_link:
+            appointment.meeting_link = meeting_link
+        appointment.save()
+
+        # Ensure patient assignment exists so the expert can review patient logs & clinical history
+        try:
+            from nutritionist.models import PatientAssignment
+            PatientAssignment.objects.get_or_create(
+                patient=appointment.patient,
+                nutritionist=appointment.nutritionist
+            )
+        except Exception as e:
+            print(f"⚠️ PatientAssignment creation note: {e}")
+
+        # Create reminders
+        try:
+            s_date = appointment.slot_date or (appointment.slot.date if appointment.slot else None)
+            st_time = appointment.slot_start_time or (appointment.slot.start_time if appointment.slot else None)
+            if s_date and st_time:
+                appointment_start = timezone.make_aware(datetime.combine(s_date, st_time))
+                from .models import AppointmentReminder
+                AppointmentReminder.objects.bulk_create([
+                    AppointmentReminder(
+                        appointment=appointment,
+                        remind_at=appointment_start - timedelta(hours=24),
+                        reminder_type="24H"
+                    ),
+                    AppointmentReminder(
+                        appointment=appointment,
+                        remind_at=appointment_start - timedelta(hours=2),
+                        reminder_type="2H"
+                    )
+                ])
+        except Exception:
+            pass
+
+        # Dispatch In-App notification, real-time WebSocket, and booking confirmation emails
+        try:
+            from .notification_utils import notify_appointment_booked_or_confirmed
+            notify_appointment_booked_or_confirmed(appointment)
+        except Exception as e:
+            print(f"⚠️ Failed to dispatch booking confirmation notification: {e}")
+
+        return Response({
+            "detail": "Payment confirmed! Appointment is now scheduled.",
+            "appointment": AppointmentDetailSerializer(appointment, context={"request": request}).data
+        }, status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────
+# 4. APPOINTMENT NOTIFICATIONS (Persistent In-App + Bell Icon)
+# ─────────────────────────────────────────────
+class AppointmentNotificationListView(APIView):
+    """
+    Returns the persistent appointment notifications for the logged-in user (patient or nutritionist),
+    ordered chronologically (newest first), along with the unread count.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        notifications = AppointmentNotification.objects.filter(
+            recipient=user
+        ).select_related("appointment").order_by("-created_at")[:50]
+
+        unread_count = AppointmentNotification.objects.filter(
+            recipient=user,
+            is_read=False
+        ).count()
+
+        serializer = AppointmentNotificationSerializer(notifications, many=True)
+        return Response({
+            "unread_count": unread_count,
+            "notifications": serializer.data,
+        }, status=status.HTTP_200_OK)
+
+
+class MarkAppointmentNotificationReadView(APIView):
+    """
+    Marks persistent appointment notifications as read.
+    Accepts optional notification_id to mark a specific one, or marks all recipient notifications read.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        notification_id = request.data.get("notification_id")
+
+        if notification_id:
+            AppointmentNotification.objects.filter(
+                id=notification_id,
+                recipient=user
+            ).update(is_read=True)
+        else:
+            AppointmentNotification.objects.filter(
+                recipient=user,
+                is_read=False
+            ).update(is_read=True)
+
+        unread_count = AppointmentNotification.objects.filter(
+            recipient=user,
+            is_read=False
+        ).count()
+
+        return Response({
+            "detail": "Notifications marked as read.",
+            "unread_count": unread_count,
         }, status=status.HTTP_200_OK)
