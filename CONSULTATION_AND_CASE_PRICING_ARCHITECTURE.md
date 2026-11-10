@@ -196,16 +196,20 @@ The user interface adheres strictly to a **White, Black, and TrackIntake Orange 
 | **14** | **Reschedule & Cancellation Modals Styling** | Frontend | Restyled `RescheduleModal.jsx` and `CancelModal.jsx` with White, Black, and Orange theme, high-contrast typography, and 24-hour policy callouts. | `frontend/src/components/components/appointments/RescheduleModal.jsx`<br>`frontend/src/components/components/appointments/CancelModal.jsx` | High-contrast modal designs consistent with design system. |
 | **15** | **Footer Social Media Hyperlinks** | Frontend | Updated `Footer.jsx` social icons with verified hyperlinks for YouTube, LinkedIn, Instagram, and Twitter/X with `target="_blank"` and `rel="noopener noreferrer"`. | `frontend/src/components/components/Footer.jsx` | Accurate, functional social links across all application views. |
 | **16** | **Comprehensive Playwright E2E Test Suite** | Testing & QA | Authored and executed automated Playwright browser test suites verifying all 21 patient tools, 16 nutritionist management features, case pricing flows, contrast rules, and footer links. | `test_new_appointments_and_contrast_playwright.py`<br>`test_case_based_pricing_playwright.py`<br>`patient_test_suite/`<br>`nutritionist_test_suite/` | **63 / 63 tests passed (100% success rate)** across all test suites. |
+| **17** | **Nutritionist 'Appointments' Navigation & Portal Filter Badges** | Frontend & UX | Renamed "Availability" navigation & labels to "Appointments" across `NutriNavbar.jsx`, `NutritionistDashboard.jsx`, `Footer.jsx`, `InteractiveAppGuide.jsx`, and `AddAvailability.jsx`. Added visual badge icons across Horizon, Mode, and Status filter tabs for both Patient (`MyAppointments.jsx`) and Nutritionist portals. | `frontend/src/components/components/nutritionist/NutriNavbar.jsx`<br>`frontend/src/components/components/nutritionist/NutritionistDashboard.jsx`<br>`frontend/src/components/components/nutritionist/AddAvailability.jsx`<br>`frontend/src/components/components/appointments/MyAppointments.jsx`<br>`frontend/src/components/components/Footer.jsx` | Clear, intuitive navigation and visual status badges across both portals; verified via `test_portal_navigation_and_badges_playwright.py` (**13 / 13 passed - 100%**). |
 
 ---
 
 ## 4. Verification & Testing Evidence
 
-- **Frontend Compilation:** `npm --prefix frontend run build` completed with 0 errors (`built in 24.68s`).
+- **Frontend Compilation:** `npm --prefix frontend run build` completed with 0 errors (`built in 21.91s`).
 - **Backend System Health:** `manage.py check` completed with 0 system errors.
 - **Playwright Automated Browser Results:**
   - `playwright_test_patient.py`: 21 / 21 PASS (100%)
   - `playwright_test_nutritionist.py`: 16 / 16 PASS (100%)
   - `test_case_based_pricing_playwright.py`: 12 / 12 PASS (100%)
-  - `test_new_appointments_and_contrast_playwright.py`: 14 / 14 PASS (100%)
-- **Screenshot Artifacts:** Visual proof screenshots captured and preserved under `playwright_screenshots/`.
+  - `test_new_appointments_and_contrast_playwright.py`: 17 / 17 PASS (100%)
+  - `test_portal_navigation_and_badges_playwright.py`: 13 / 13 PASS (100%)
+  - **Total:** **79 / 79 tests passed (100% success rate)** across all test suites.
+- **Screenshot Artifacts:** Visual proof screenshots captured and preserved under `playwright_screenshots/navigation_badges/` and `playwright_screenshots/new_features/`.
+
