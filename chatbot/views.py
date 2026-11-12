@@ -217,7 +217,6 @@ Platform Core Capabilities:
    - BMI Calculator: Calculate Body Mass Index and find clinical healthy weight target ranges.
    - Body Fat Calculator: Estimate body fat % and lean muscle mass using the US Navy circumference method (neck, waist, hip).
    - Weight Tracker: Log body weight history, visualize progress curves, and track pacing toward target weight goals.
-   - Custom Reminders: Schedule personalized in-app notifications for meal times, water intake, vitamins/medications, and weigh-in days.
    - Health Dashboard & Diabetes Vitals: Log and monitor Fasting and Post-Prandial blood glucose, blood pressure, and heart rate.
    - Lab Reports: Upload medical test PDFs/images (CBC, Lipid, HbA1c, Thyroid) to share directly with assigned nutritionists.
    - Nutrition Search: Database of 2000+ Indian and global foods with Glycemic Index (GI), macros, and micronutrients.
