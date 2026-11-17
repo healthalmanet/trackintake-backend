@@ -145,13 +145,8 @@ class RegisterView(views.APIView):
         # Optional payment verification if payment fields provided
         payment = None
         if all([razorpay_order_id, razorpay_payment_id, razorpay_signature]):
-            generated_sig = hmac.new(
-                settings.RAZORPAY_KEY_SECRET.encode(),
-                f"{razorpay_order_id}|{razorpay_payment_id}".encode(),
-                hashlib.sha256,
-            ).hexdigest()
-
-            if hmac.compare_digest(generated_sig, razorpay_signature):
+            from subscriptions.utils import verify_razorpay_payment_signature
+            if verify_razorpay_payment_signature(razorpay_order_id, razorpay_payment_id, razorpay_signature):
                 try:
                     payment = Payment.objects.get(
                         razorpay_order_id=razorpay_order_id,

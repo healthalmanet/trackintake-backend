@@ -28,13 +28,8 @@ class RazorpayWebhook(APIView):
             return Response({"error": "Missing signature"}, status=400)
 
         # ── Verify webhook signature ─────────────────────────────
-        expected_signature = hmac.new(
-            settings.RAZORPAY_WEBHOOK_SECRET.encode(),
-            payload,
-            hashlib.sha256,
-        ).hexdigest()
-
-        if not hmac.compare_digest(received_signature, expected_signature):
+        from subscriptions.utils import verify_razorpay_webhook_signature
+        if not verify_razorpay_webhook_signature(payload, received_signature):
             return Response({"error": "Invalid signature"}, status=400)
 
         # ── Parse payload ────────────────────────────────────────
