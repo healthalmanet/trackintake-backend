@@ -359,6 +359,11 @@ RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
 RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")
 
+# Dual / Fallback credentials for Razorpay reconciliation and webhook verification
+RAZORPAY_LIVE_KEY_ID = os.getenv("RAZORPAY_LIVE_KEY_ID", "rzp_live_SJ7oBZrxhN3QI6")
+RAZORPAY_LIVE_KEY_SECRET = os.getenv("RAZORPAY_LIVE_KEY_SECRET", "pV2vbYE53F86xncD5my4ZB7O")
+RAZORPAY_LIVE_WEBHOOK_SECRET = os.getenv("RAZORPAY_LIVE_WEBHOOK_SECRET", "trackintake")
+
 PATHYATECH_BACKEND_URL = config("PATHYATECH_BACKEND_URL", default="http://localhost:9000")
 PATHYATECH_API_SECRET = config("PATHYATECH_API_SECRET", default="PT_SEC_12345")
 

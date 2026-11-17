@@ -272,13 +272,8 @@ class IntegrationVerifyPaymentView(APIView):
             )
 
         # Verify signature
-        expected = hmac.new(
-            settings.RAZORPAY_KEY_SECRET.encode(),
-            f"{order_id}|{payment_id}".encode(),
-            hashlib.sha256
-        ).hexdigest()
-
-        if not hmac.compare_digest(expected, signature):
+        from subscriptions.utils import verify_razorpay_payment_signature
+        if not verify_razorpay_payment_signature(order_id, payment_id, signature):
             return Response({"error": "Invalid razorpay payment signature."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:

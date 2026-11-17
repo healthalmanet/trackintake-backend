@@ -100,15 +100,36 @@ def consume_consultation(user, consult_type: str):
 
 @transaction.atomic
 def activate_plan_for_user(user, plan):
-    UserSubscription.objects.update_or_create(
+    """
+    Activates or updates a plan subscription for the user.
+    Ensures that any previous active subscriptions are properly replaced,
+    avoiding multiple active subscription errors.
+    """
+    now_date = timezone.now().date()
+    new_end_date = now_date + timedelta(days=plan.duration_days)
+
+    active_sub = UserSubscription.objects.filter(user=user, is_active=True).first()
+    if active_sub:
+        active_sub.plan = plan
+        active_sub.start_date = now_date
+        active_sub.end_date = new_end_date
+        active_sub.remaining_inhouse = plan.inhouse_consults
+        active_sub.remaining_expert = plan.expert_consults
+        active_sub.is_active = True
+        active_sub.save(update_fields=[
+            "plan", "start_date", "end_date", "remaining_inhouse", "remaining_expert", "is_active"
+        ])
+        return active_sub
+
+    # Ensure all existing subscriptions for user are marked inactive before creating new
+    UserSubscription.objects.filter(user=user).update(is_active=False)
+    return UserSubscription.objects.create(
         user=user,
-        defaults={
-            "plan": plan,
-            "start_date": timezone.now().date(),
-            "end_date": timezone.now().date() + timedelta(days=plan.duration_days),
-            "remaining_inhouse": plan.inhouse_consults,
-            "remaining_expert": plan.expert_consults,
-            "is_active": True,
-        }
+        plan=plan,
+        start_date=now_date,
+        end_date=new_end_date,
+        remaining_inhouse=plan.inhouse_consults,
+        remaining_expert=plan.expert_consults,
+        is_active=True,
     )
 

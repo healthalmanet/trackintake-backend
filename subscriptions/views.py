@@ -21,6 +21,17 @@ class MySubscriptionView(APIView):
     def get(self, request):
         user_role = getattr(request.user, "role", "user")
 
+        from subscriptions.utils import reconcile_user_pending_payments
+        reconcile_user_pending_payments(request.user)
+
+        now_date = timezone.now().date()
+        # Deactivate any expired subscriptions for this user
+        UserSubscription.objects.filter(
+            user=request.user,
+            is_active=True,
+            end_date__lt=now_date
+        ).update(is_active=False)
+
         # ── Nutritionist flow ───────────────────────────────────────────────
         if user_role == "nutritionist":
             subscription = (
@@ -28,6 +39,7 @@ class MySubscriptionView(APIView):
                 .filter(
                     user=request.user,
                     is_active=True,
+                    end_date__gte=now_date,
                 )
                 .select_related("plan")
                 .order_by("-created_at")
@@ -43,8 +55,8 @@ class MySubscriptionView(APIView):
                     "role": "nutritionist",
                 })
 
-            rem_days = max(0, (subscription.end_date - timezone.now().date()).days) if subscription.end_date else 0
-            is_valid = subscription.is_active and (subscription.end_date >= timezone.now().date() if subscription.end_date else True)
+            rem_days = max(0, (subscription.end_date - now_date).days) if subscription.end_date else 0
+            is_valid = bool(subscription.is_active and (subscription.end_date >= now_date if subscription.end_date else True))
             return Response({
                 "has_plan": True,
                 "plan": PlanSerializer(subscription.plan).data,
@@ -63,6 +75,7 @@ class MySubscriptionView(APIView):
             .filter(
                 user=request.user,
                 is_active=True,
+                end_date__gte=now_date,
                 plan__plan_type='patient'
             )
             .select_related("plan")
@@ -158,11 +171,12 @@ class MySubscriptionView(APIView):
                 "remaining_days": 0,
             })
 
-        rem_days = max(0, (subscription.end_date - timezone.now().date()).days) if subscription.end_date else 0
+        rem_days = max(0, (subscription.end_date - now_date).days) if subscription.end_date else 0
+        is_valid = bool(subscription.is_active and (subscription.end_date >= now_date if subscription.end_date else True))
         return Response({
             "has_plan": True,
             "plan": PlanSerializer(subscription.plan).data,
-            "is_active": True,
+            "is_active": is_valid,
             "start_date": subscription.start_date,
             "expires_at": subscription.end_date,
             "remaining_days": rem_days,
@@ -423,13 +437,8 @@ class VerifyPaymentView(APIView):
             return Response({"error": "Missing payment fields"}, status=400)
 
         # Signature verify
-        expected = hmac.new(
-            settings.RAZORPAY_KEY_SECRET.encode(),
-            f"{order_id}|{payment_id}".encode(),
-            hashlib.sha256
-        ).hexdigest()
-
-        if not hmac.compare_digest(expected, signature):
+        from subscriptions.utils import verify_razorpay_payment_signature, get_razorpay_clients
+        if not verify_razorpay_payment_signature(order_id, payment_id, signature):
             return Response({"error": "Invalid signature"}, status=400)
 
         # Update Payment record if it exists
@@ -440,23 +449,25 @@ class VerifyPaymentView(APIView):
             payment.save(update_fields=["razorpay_payment_id", "status"])
 
         # Fetch Razorpay Order / Payment notes to determine payment type
-        client = razorpay.Client(
-            auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET)
-        )
-        
         notes = {}
-        try:
-            rzp_order = client.order.fetch(order_id)
-            notes = rzp_order.get("notes", {}) or {}
-        except Exception as e:
-            print(f"Failed to fetch order notes from Razorpay: {e}")
+        for client in get_razorpay_clients():
+            try:
+                rzp_order = client.order.fetch(order_id)
+                notes = rzp_order.get("notes", {}) or {}
+                if notes:
+                    break
+            except Exception as e:
+                pass
 
         if not notes:
-            try:
-                rzp_payment = client.payment.fetch(payment_id)
-                notes = rzp_payment.get("notes", {}) or {}
-            except Exception as e:
-                print(f"Failed to fetch payment notes from Razorpay: {e}")
+            for client in get_razorpay_clients():
+                try:
+                    rzp_payment = client.payment.fetch(payment_id)
+                    notes = rzp_payment.get("notes", {}) or {}
+                    if notes:
+                        break
+                except Exception as e:
+                    pass
 
         # ✅ 1. Consultation fee payment
         if notes.get("type") == "consultation_fee":
@@ -634,6 +645,9 @@ class BillingHistoryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from subscriptions.utils import reconcile_user_pending_payments
+        reconcile_user_pending_payments(request.user)
+
         payments = (
             Payment.objects
             .filter(user=request.user)
