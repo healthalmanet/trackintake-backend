@@ -112,77 +112,51 @@ def require_plan_feature(user, feature_flag):
 
 def get_razorpay_clients():
     """
-    Returns a list of initialized Razorpay Client instances (primary first, then fallback/live if configured).
+    Returns initialized Razorpay Client instance using standard settings.
     """
     import razorpay
     clients = []
-    seen_keys = set()
-
-    # 1. Primary
     p_key = getattr(settings, "RAZORPAY_KEY_ID", None)
     p_sec = getattr(settings, "RAZORPAY_KEY_SECRET", None)
     if p_key and p_sec:
         try:
             clients.append(razorpay.Client(auth=(p_key, p_sec)))
-            seen_keys.add(p_key)
         except Exception as e:
-            logger.warning(f"Could not initialize primary Razorpay client: {e}")
-
-    # 2. Fallback / Live
-    l_key = getattr(settings, "RAZORPAY_LIVE_KEY_ID", None)
-    l_sec = getattr(settings, "RAZORPAY_LIVE_KEY_SECRET", None)
-    if l_key and l_sec and l_key not in seen_keys:
-        try:
-            clients.append(razorpay.Client(auth=(l_key, l_sec)))
-        except Exception as e:
-            logger.warning(f"Could not initialize fallback Razorpay client: {e}")
-
+            logger.warning(f"Could not initialize Razorpay client: {e}")
     return clients
 
 
 def verify_razorpay_payment_signature(order_id, payment_id, signature):
     """
-    Verifies Razorpay payment signature against primary secret, with fallback to live secret.
+    Verifies Razorpay payment signature using standard RAZORPAY_KEY_SECRET.
     """
     import hmac, hashlib
+    sec = getattr(settings, "RAZORPAY_KEY_SECRET", None)
+    if not sec:
+        return False
     msg = f"{order_id}|{payment_id}".encode()
-    secrets = [
-        getattr(settings, "RAZORPAY_KEY_SECRET", None),
-        getattr(settings, "RAZORPAY_LIVE_KEY_SECRET", None),
-    ]
-    for sec in secrets:
-        if not sec:
-            continue
-        try:
-            expected = hmac.new(sec.encode(), msg, hashlib.sha256).hexdigest()
-            if hmac.compare_digest(expected, signature):
-                return True
-        except Exception:
-            continue
-    return False
+    try:
+        expected = hmac.new(sec.encode(), msg, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
+    except Exception:
+        return False
 
 
 def verify_razorpay_webhook_signature(payload, received_signature):
     """
-    Verifies Razorpay webhook signature against primary secret, with fallback to live secret.
+    Verifies Razorpay webhook signature using standard RAZORPAY_WEBHOOK_SECRET.
     """
     import hmac, hashlib
+    sec = getattr(settings, "RAZORPAY_WEBHOOK_SECRET", None)
+    if not sec:
+        return False
     if isinstance(payload, str):
         payload = payload.encode()
-    secrets = [
-        getattr(settings, "RAZORPAY_WEBHOOK_SECRET", None),
-        getattr(settings, "RAZORPAY_LIVE_WEBHOOK_SECRET", None),
-    ]
-    for sec in secrets:
-        if not sec:
-            continue
-        try:
-            expected = hmac.new(sec.encode(), payload, hashlib.sha256).hexdigest()
-            if hmac.compare_digest(received_signature, expected):
-                return True
-        except Exception:
-            continue
-    return False
+    try:
+        expected = hmac.new(sec.encode(), payload, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(received_signature, expected)
+    except Exception:
+        return False
 
 
 def reconcile_pending_payment(payment):
