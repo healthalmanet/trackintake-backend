@@ -362,6 +362,16 @@ class Appointment(models.Model):
     # 📝 Clinical notes / observations and dietary advice given by nutritionist
     notes = models.TextField(blank=True, default="")
     instructions = models.TextField(blank=True, default="")
+    follow_up_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Recommended follow-up appointment date"
+    )
+    follow_up_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Follow-up instructions or recommendations for the patient"
+    )
 
     # 📋 Case-Based Pricing & Review for Variable Expert Appointments
     pricing_mode = models.CharField(

@@ -570,6 +570,8 @@ class AppointmentListSerializer(serializers.ModelSerializer):
             "meeting_link",
             "notes",
             "instructions",
+            "follow_up_date",
+            "follow_up_notes",
             "created_at",
             "patient_id",
             "patient_name",
@@ -715,6 +717,8 @@ class AppointmentDetailSerializer(serializers.ModelSerializer):
             "meeting_link",
             "notes",
             "instructions",
+            "follow_up_date",
+            "follow_up_notes",
             "created_at",
             "slot",
             "price",
@@ -993,10 +997,12 @@ class NutritionistPayoutSerializer(serializers.ModelSerializer):
 class AppointmentNotesUpdateSerializer(serializers.ModelSerializer):
     notes = serializers.CharField(required=False, allow_blank=True)
     instructions = serializers.CharField(required=False, allow_blank=True)
+    follow_up_date = serializers.DateField(required=False, allow_null=True)
+    follow_up_notes = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = Appointment
-        fields = ["notes", "instructions"]
+        fields = ["notes", "instructions", "follow_up_date", "follow_up_notes"]
 
 
 class AppointmentNotificationSerializer(serializers.ModelSerializer):
