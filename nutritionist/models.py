@@ -136,6 +136,15 @@ class NutritionistProfile(models.Model):
     additional_certifications = models.FileField(upload_to="nutritionist/certificates/", storage=CustomCloudinaryStorage(), blank=True, null=True)
     profile_photo = models.ImageField(upload_to="nutritionist/photos/", storage=CustomCloudinaryStorage(), blank=True, null=True)
 
+    custom_commission_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name="Custom Commission Cut (%)",
+        help_text="Custom commission cut for this specific nutritionist. If null, global category default applies."
+    )
+
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -180,6 +189,20 @@ class InHousePricingConfig(models.Model):
         default=True,
         verbose_name="Sync Rates Immediately to All In-House Nutritionists",
         help_text="When saved, automatically updates all current In-House practitioner profiles with these standard fees."
+    )
+    platform_commission_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=5.00,
+        verbose_name="Platform Commission Cut (%)",
+        help_text="Percentage retained by TrackIntake from online consultation fees (e.g. 5.00 for 5%)"
+    )
+    expert_commission_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=5.00,
+        verbose_name="Expert Commission Cut (%)",
+        help_text="Percentage retained by TrackIntake from expert specialists online consultation fees"
     )
     updated_at = models.DateTimeField(auto_now=True)
 

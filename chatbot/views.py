@@ -146,7 +146,13 @@ from django.views.decorators.csrf import csrf_exempt
 from rest_framework.permissions import AllowAny
 
 import os
+from pathlib import Path
+import dotenv
 from django.conf import settings
+
+env_path = Path(__file__).resolve().parent.parent / '.env'
+if env_path.exists():
+    dotenv.load_dotenv(env_path, override=True)
 
 try:
     from google import genai
@@ -154,6 +160,19 @@ try:
     ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 except Exception:
     ai_client = None
+
+
+def get_ai_client():
+    global ai_client
+    if env_path.exists():
+        dotenv.load_dotenv(env_path, override=True)
+    key = getattr(settings, "GEMINI_API_KEY", None) or os.getenv("GEMINI_API_KEY")
+    if key:
+        try:
+            return genai.Client(api_key=key)
+        except Exception:
+            pass
+    return ai_client
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -198,7 +217,8 @@ class ChatBotView(APIView):
                 })
 
             # 🔹 Dynamic AI Generation using Gemini
-            if ai_client:
+            client_to_use = get_ai_client()
+            if client_to_use:
                 role_context = "a registered clinical nutritionist / dietitian" if role == "nutritionist" else "a patient / health tracking user"
                 system_prompt = f"""You are the official TrackIntake AI Health & Clinical Assistant.
 TrackIntake is an advanced clinical dietary nutrition and health tracking platform.
@@ -232,16 +252,17 @@ Instructions:
 3. If they ask about TrackIntake features (how to add patients, bulk upload, log meals, track water, calculate BMI or body fat, upload lab reports), provide exact, actionable step-by-step instructions.
 4. Format your answer with clean Markdown (bullet points, bold text). Keep responses concise, clear, and easy to read.
 """
-                models_to_try = [
-                    getattr(settings, "GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")),
-                ]
-                fallback_m = getattr(settings, "GEMINI_FALLBACK_MODEL", os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash"))
-                if fallback_m and fallback_m not in models_to_try:
-                    models_to_try.append(fallback_m)
+                models_to_try = []
+                primary_m = getattr(settings, "GEMINI_MODEL", None) or os.getenv("GEMINI_MODEL")
+                fallback_m = getattr(settings, "GEMINI_FALLBACK_MODEL", None) or os.getenv("GEMINI_FALLBACK_MODEL")
+                if primary_m and primary_m.strip():
+                    models_to_try.append(primary_m.strip())
+                if fallback_m and fallback_m.strip() and fallback_m.strip() not in models_to_try:
+                    models_to_try.append(fallback_m.strip())
 
                 for m in models_to_try:
                     try:
-                        ai_response = ai_client.models.generate_content(
+                        ai_response = client_to_use.models.generate_content(
                             model=m,
                             contents=system_prompt
                         )

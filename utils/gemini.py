@@ -33,24 +33,60 @@ env_path = Path(__file__).resolve().parent.parent / '.env'
 if env_path.exists():
     dotenv.load_dotenv(env_path, override=True)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-flash-lite-latest")
 
-if not GEMINI_API_KEY:
-    raise RuntimeError(f"❌ GEMINI_API_KEY not found in environment variables.")
-client = genai.Client(
-    api_key=GEMINI_API_KEY,
-    http_options=types.HttpOptions(timeout=12000),
-)
+def get_gemini_api_key():
+    if env_path.exists():
+        dotenv.load_dotenv(env_path, override=True)
+    return os.getenv("GEMINI_API_KEY")
+
+
+def get_gemini_models():
+    """Retrieve primary model and fallback model from environment variables."""
+    if env_path.exists():
+        dotenv.load_dotenv(env_path, override=True)
+    primary = os.getenv("GEMINI_MODEL")
+    fallback = os.getenv("GEMINI_FALLBACK_MODEL")
+
+    models = []
+    if primary and primary.strip():
+        models.append(primary.strip())
+    if fallback and fallback.strip() and fallback.strip() not in models:
+        models.append(fallback.strip())
+    return models
+
+
+GEMINI_API_KEY = get_gemini_api_key()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL")
+
+
+def get_client():
+    api_key = get_gemini_api_key()
+    if not api_key:
+        raise RuntimeError("❌ GEMINI_API_KEY not found in environment variables.")
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=35000),
+    )
+
+
+client = None
+try:
+    if GEMINI_API_KEY:
+        client = get_client()
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 
 def generate_content_with_fallback(contents, config=None):
-    """Try GEMINI_MODEL first; if it fails, automatically retry with GEMINI_FALLBACK_MODEL."""
-    models_to_try = [GEMINI_MODEL]
-    if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != GEMINI_MODEL:
-        models_to_try.append(GEMINI_FALLBACK_MODEL)
+    """Try primary model from env first; if it fails, retry with fallback model from env."""
+    models_to_try = get_gemini_models()
+    if not models_to_try:
+        raise RuntimeError("❌ No GEMINI_MODEL configured in environment variables.")
+
+    current_client = get_client()
 
     last_err = None
     for m in models_to_try:
@@ -58,7 +94,7 @@ def generate_content_with_fallback(contents, config=None):
             kwargs = {"model": m, "contents": contents}
             if config is not None:
                 kwargs["config"] = config
-            return client.models.generate_content(**kwargs)
+            return current_client.models.generate_content(**kwargs)
         except Exception as e:
             last_err = e
             logger.warning("Gemini model %s failed: %s. Trying fallback if available...", m, e)
@@ -82,7 +118,7 @@ def get_nullable_float(data: dict, key: str):
 
 
 @transaction.atomic
-def fetch_nutrition_from_gemini(food_name: str, quantity: float, unit: str) -> FoodItem:
+def fetch_nutrition_from_gemini(food_name: str, quantity: float, unit: str, remarks: str = "") -> FoodItem:
     """
     Fetches nutritional data from Gemini for a food not found in the DB.
     Saves/updates the FoodItem permanently (Gemini as data collector, not generator).
@@ -91,11 +127,17 @@ def fetch_nutrition_from_gemini(food_name: str, quantity: float, unit: str) -> F
     - name_key is used for all DB lookups (normalized lowercase exact match)
     - Never overwrites is_verified=True records
     - Enforces gram_equivalent > 0
+    - If remarks contain ingredients, additions, or cooking method, adjusts nutrition and name accordingly
     """
     # Build clean names for lookup and prompt
     lookup_key   = normalize_food_name(food_name)    # e.g. "white rice"
     display_name = display_food_name(food_name)      # e.g. "White Rice"
-    food_query   = f"{quantity} {unit} of {display_name}"
+
+    clean_remarks = (remarks or "").strip()
+    if clean_remarks:
+        food_query = f"{quantity} {unit} of {display_name} (Preparation / additions / ingredients: {clean_remarks})"
+    else:
+        food_query = f"{quantity} {unit} of {display_name}"
 
     prompt = f"""
 Return nutrition data for: "{food_query}"
@@ -104,6 +146,8 @@ Return nutrition data for: "{food_query}"
 Rules:
 - Match the exact serving size specified.
 - Use reliable nutrition data (USDA-style).
+- If additional preparation notes, ingredients, or cooking specifications are provided in parentheses/remarks (e.g. 'with mixed vegetables, 3 tbsp bhindi', 'cooked in 1 tsp olive oil', 'no sugar'), accurately calculate and adjust the nutrition (calories, protein, carbs, fats, fiber, etc.) to reflect the base food plus all specified additions and cooking methods, and reflect the dish name in "food_item.name" (e.g. "Oats with Mixed Vegetables and Bhindi").
+- If the remarks are purely non-dietary or situational notes (e.g. 'ate at desk', 'had it at 9am'), calculate standard nutrition for the base food and do not alter the dish name.
 - In the "food_item.name" field, use the standard, correct English/culinary spelling of the dish (e.g. if the user input contains a typo like "paniir masala" or "chiken curry", correct it to the canonical "Paneer Masala" or "Chicken Curry").
 - Every numeric field MUST be a JSON number (e.g. 320.5), never a string, never null, never a placeholder.
 - Output valid JSON only, no extra text.

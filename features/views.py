@@ -236,6 +236,10 @@ class MessageListView(generics.ListAPIView):
             elif is_read.lower() in ['false', '0']:
                 qs = qs.filter(is_read=False)
 
+        incoming = self.request.query_params.get('incoming')
+        if incoming and incoming.lower() in ['true', '1']:
+            qs = qs.filter(receiver=user)
+
         ordering = self.request.query_params.get('ordering', 'timestamp')
         if ordering == '-timestamp':
             qs = qs.order_by('-timestamp')

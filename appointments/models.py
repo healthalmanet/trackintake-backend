@@ -437,6 +437,18 @@ class Appointment(models.Model):
         default=0.00,
         help_text="Net payout owed/transferred to nutritionist",
     )
+    commission_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=5.00,
+        help_text="Platform commission percentage applied (e.g. 5.00%)",
+    )
+    commission_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0.00,
+        help_text="Platform commission fee cut deducted from booking fee",
+    )
     payout_marked_at = models.DateTimeField(null=True, blank=True)
     payout_transaction_ref = models.CharField(
         max_length=100,

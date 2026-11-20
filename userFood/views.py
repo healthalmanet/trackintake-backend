@@ -254,15 +254,39 @@ class UserMealViewSet(viewsets.ModelViewSet):
 
     # --- THIS IS THE FIXED FUNCTION ---
 # --- THIS IS THE UPDATED FUNCTION ---
-    def _find_or_create_food_item(self, food_name: str, quantity: float, unit: str) -> 'FoodItem':
+    def _find_or_create_food_item(self, food_name: str, quantity: float, unit: str, remarks: str = "") -> 'FoodItem':
         """
         Finds a food item by exact normalized name_key, or creates one via Gemini.
-        No fuzzy matching — an incorrect match is worse than a Gemini lookup.
+        If remarks contain preparation notes or ingredients (e.g. 'with 3 tbsp bhindi'),
+        Gemini calculates accurate composite nutrition.
         """
         raw = food_name.strip()
         if not raw:
             raise ValueError("`food_name` cannot be empty.")
 
+        clean_remarks = (remarks or "").strip()
+        display = display_food_name(raw)
+
+        # If user supplied remarks with ingredients or preparation notes:
+        if clean_remarks:
+            # Check if a composite item already exists in DB
+            composite_key = normalize_food_name(f"{raw} {clean_remarks}")
+            food = FoodItem.objects.filter(name__iexact=composite_key).first()
+            if not food:
+                food = FoodItem.objects.filter(name__iexact=f"{raw} with {clean_remarks}").first()
+            if food and (food.calories or 0) > 0:
+                return food
+
+            # Call Gemini with the dish name + remarks to calculate accurate combined nutrition
+            print(f"🔄 Gemini lookup for '{display}' with remarks: '{clean_remarks}'...")
+            gemini_food = fetch_nutrition_from_gemini(display, quantity, unit, remarks=clean_remarks)
+            if not gemini_food or (gemini_food.calories or 0) <= 0:
+                raise ValueError(f"Could not find valid nutrition info for '{display}' with remarks '{clean_remarks}'")
+
+            print(f"✅ Gemini resolved '{display}' + remarks → '{gemini_food.name}'.")
+            return gemini_food
+
+        # Standard flow without remarks:
         lookup_key = normalize_food_name(raw)   # e.g. "white rice"
 
         # Exact match (case-insensitive) on existing FoodItem.name without modifying FoodItem table
@@ -273,7 +297,6 @@ class UserMealViewSet(viewsets.ModelViewSet):
             return food
 
         # No match — call Gemini to collect real nutrition data
-        display = display_food_name(raw)        # e.g. "White Rice"
         print(f"🔄 Gemini fallback for '{display}' (key='{lookup_key}')...")
         gemini_food = fetch_nutrition_from_gemini(display, quantity, unit)
 
@@ -293,8 +316,9 @@ class UserMealViewSet(viewsets.ModelViewSet):
 
             quantity = float(item_data.get("quantity", 1))
             unit     = item_data.get("unit", "Gram")
+            remarks  = item_data.get("remarks", "")
 
-            food = self._find_or_create_food_item(raw_name, quantity, unit)
+            food = self._find_or_create_food_item(raw_name, quantity, unit, remarks=remarks)
 
             # Store clean display name: use canonical food.name (correcting any typo)
             clean_name = food.name if food and food.name else display_food_name(raw_name)

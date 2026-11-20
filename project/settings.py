@@ -12,8 +12,8 @@ import ssl
 
 
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file (override=True ensures .env values take precedence)
+load_dotenv(override=True)
 
 SUGGESTION_PERIOD_DAYS = 1 
 
@@ -337,8 +337,8 @@ SOCIALACCOUNT_PROVIDERS = {
 # GEMINI AI MODEL SETTINGS
 # ==============================================================================
 GEMINI_API_KEY = config("GEMINI_API_KEY", default=None)
-GEMINI_MODEL = config("GEMINI_MODEL", default="gemini-flash-lite-latest")
-GEMINI_FALLBACK_MODEL = config("GEMINI_FALLBACK_MODEL", default="gemini-2.5-flash")
+GEMINI_MODEL = config("GEMINI_MODEL", default=None)
+GEMINI_FALLBACK_MODEL = config("GEMINI_FALLBACK_MODEL", default=None)
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
