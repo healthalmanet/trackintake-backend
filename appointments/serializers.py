@@ -308,9 +308,21 @@ class AppointmentCreateSerializer(serializers.Serializer):
                     print(f"⚠️ Zoom link generation error: {e}")
                     meeting_link = f"https://zoom.us/j/trackintake-{slot.id}"
 
-            # Calculate financial parameters based on slot type
+            # Calculate financial parameters based on slot type with platform commission
+            from nutritionist.models import InHousePricingConfig, NutritionistProfile
+            config = InHousePricingConfig.objects.first()
+            prof = NutritionistProfile.objects.filter(user=slot.nutritionist).first()
+            if prof and prof.custom_commission_percent is not None:
+                current_comm_rate = float(prof.custom_commission_percent)
+            elif prof and getattr(prof, 'nutritionist_type', '').lower() == 'expert':
+                current_comm_rate = float(config.expert_commission_percent) if config and getattr(config, 'expert_commission_percent', None) is not None else 5.0
+            else:
+                current_comm_rate = float(config.platform_commission_percent) if config and config.platform_commission_percent is not None else 5.0
+
             if is_variable_slot:
                 fee_amount = 0.00
+                commission_rate = current_comm_rate
+                commission_amount = 0.00
                 payout_amount = 0.00
                 payment_status = "UNPAID"
                 payout_status = "NOT_APPLICABLE"
@@ -318,19 +330,21 @@ class AppointmentCreateSerializer(serializers.Serializer):
             else:
                 appointment_status = "CONFIRMED"
                 fee_amount = real_price
-                payout_amount = real_price
+                commission_rate = current_comm_rate
+                commission_amount = round(fee_amount * (commission_rate / 100.0), 2)
+                payout_amount = max(0.00, round(fee_amount - commission_amount, 2))
 
                 if is_offline_pay_later and not consumed_quota:
                     # In-Person where patient pays cash/card directly at the clinic to nutritionist
                     payment_status = "UNPAID"
                     payout_status = "NOT_APPLICABLE"
                     payout_amount = 0.00
+                    commission_amount = 0.00
                 else:
                     # All platform payments (virtual consultations, or clinic visits requiring online payment, or plan quota consumed)
                     # Revenue is collected by platform, so Admin owes payout to the nutritionist
                     payment_status = "PAID"
                     payout_status = "PENDING"
-                    payout_amount = real_price
 
             # ✅ CREATE APPOINTMENT WITH LINK & SNAPSHOTS
             appointment = Appointment.objects.create(
@@ -349,6 +363,8 @@ class AppointmentCreateSerializer(serializers.Serializer):
                 payment_status=payment_status,
                 payout_status=payout_status,
                 payout_amount=payout_amount,
+                commission_rate=commission_rate,
+                commission_amount=commission_amount,
                 status=appointment_status,
                 pricing_mode="VARIABLE" if is_variable_slot else "FIXED",
                 patient_case_summary=validated_data.get("patient_case_summary", ""),
@@ -554,6 +570,8 @@ class AppointmentListSerializer(serializers.ModelSerializer):
             "meeting_link",
             "notes",
             "instructions",
+            "follow_up_date",
+            "follow_up_notes",
             "created_at",
             "patient_id",
             "patient_name",
@@ -699,6 +717,8 @@ class AppointmentDetailSerializer(serializers.ModelSerializer):
             "meeting_link",
             "notes",
             "instructions",
+            "follow_up_date",
+            "follow_up_notes",
             "created_at",
             "slot",
             "price",
@@ -892,6 +912,8 @@ class NutritionistPayoutSerializer(serializers.ModelSerializer):
     session_date = serializers.SerializerMethodField()
     session_time = serializers.SerializerMethodField()
     fee_amount = serializers.SerializerMethodField()
+    commission_rate = serializers.SerializerMethodField()
+    commission_amount = serializers.SerializerMethodField()
     payout_amount = serializers.SerializerMethodField()
     payout_status = serializers.SerializerMethodField()
 
@@ -905,6 +927,8 @@ class NutritionistPayoutSerializer(serializers.ModelSerializer):
             "session_date",
             "session_time",
             "fee_amount",
+            "commission_rate",
+            "commission_amount",
             "payout_amount",
             "payment_status",
             "payout_status",
@@ -936,11 +960,30 @@ class NutritionistPayoutSerializer(serializers.ModelSerializer):
                 return float(price)
         return 0.0
 
+    def get_commission_rate(self, obj):
+        if obj.commission_rate is not None:
+            return float(obj.commission_rate)
+        return 5.0
+
+    def get_commission_amount(self, obj):
+        if obj.commission_amount is not None and float(obj.commission_amount) > 0:
+            return float(obj.commission_amount)
+        fee = self.get_fee_amount(obj)
+        rate = self.get_commission_rate(obj)
+        if fee > 0 and rate > 0:
+            return round(fee * (rate / 100.0), 2)
+        return 0.0
+
     def get_payout_amount(self, obj):
+        fee = self.get_fee_amount(obj)
+        comm = self.get_commission_amount(obj)
         if obj.payout_amount and float(obj.payout_amount) > 0:
+            # If payout_amount was recorded without deducting commission (legacy records where payout == fee)
+            if float(obj.payout_amount) == fee and comm > 0:
+                return max(0.0, round(fee - comm, 2))
             return float(obj.payout_amount)
-        if obj.appointment_type == "VIRTUAL":
-            return self.get_fee_amount(obj)
+        if obj.appointment_type == "VIRTUAL" and fee > 0:
+            return max(0.0, round(fee - comm, 2))
         return 0.0
 
     def get_payout_status(self, obj):
@@ -954,10 +997,12 @@ class NutritionistPayoutSerializer(serializers.ModelSerializer):
 class AppointmentNotesUpdateSerializer(serializers.ModelSerializer):
     notes = serializers.CharField(required=False, allow_blank=True)
     instructions = serializers.CharField(required=False, allow_blank=True)
+    follow_up_date = serializers.DateField(required=False, allow_null=True)
+    follow_up_notes = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = Appointment
-        fields = ["notes", "instructions"]
+        fields = ["notes", "instructions", "follow_up_date", "follow_up_notes"]
 
 
 class AppointmentNotificationSerializer(serializers.ModelSerializer):

@@ -1000,23 +1000,47 @@ class NutritionistPayoutsView(APIView):
             qs = qs.filter(payout_status=payout_status)
 
         # Financial summary aggregation
+        from nutritionist.models import InHousePricingConfig, NutritionistProfile
+        _cfg = InHousePricingConfig.objects.first()
+        _prof = NutritionistProfile.objects.filter(user=user).first()
+        if _prof and _prof.custom_commission_percent is not None:
+            platform_commission_percent = float(_prof.custom_commission_percent)
+        elif _prof and getattr(_prof, 'nutritionist_type', '').lower() == 'expert':
+            platform_commission_percent = float(_cfg.expert_commission_percent) if _cfg and getattr(_cfg, 'expert_commission_percent', None) is not None else 5.0
+        else:
+            platform_commission_percent = float(_cfg.platform_commission_percent) if _cfg and _cfg.platform_commission_percent is not None else 5.0
+
         all_nutri_appts = Appointment.objects.filter(
             nutritionist=user
         ).filter(
             Q(appointment_type="VIRTUAL") | Q(fee_amount__gt=0)
         )
 
-        total_earned = all_nutri_appts.filter(
+        gross_bookings_total = float(all_nutri_appts.filter(
             payout_status__in=["PAID", "PENDING"]
-        ).aggregate(total=Sum("payout_amount"))["total"] or 0.0
+        ).aggregate(total=Sum("fee_amount"))["total"] or 0.0)
 
-        pending_payout = all_nutri_appts.filter(
+        total_earned = float(all_nutri_appts.filter(
+            payout_status__in=["PAID", "PENDING"]
+        ).aggregate(total=Sum("payout_amount"))["total"] or 0.0)
+
+        # In case legacy appointments had payout_amount equal to fee_amount, adjust total_earned & commission
+        platform_commission_total = float(all_nutri_appts.filter(
+            payout_status__in=["PAID", "PENDING"]
+        ).aggregate(total=Sum("commission_amount"))["total"] or 0.0)
+
+        if platform_commission_total <= 0 and gross_bookings_total > 0:
+            platform_commission_total = round(gross_bookings_total * (platform_commission_percent / 100.0), 2)
+            if total_earned >= gross_bookings_total:
+                total_earned = max(0.0, gross_bookings_total - platform_commission_total)
+
+        pending_payout = float(all_nutri_appts.filter(
             payout_status="PENDING"
-        ).aggregate(total=Sum("payout_amount"))["total"] or 0.0
+        ).aggregate(total=Sum("payout_amount"))["total"] or 0.0)
 
-        completed_payout = all_nutri_appts.filter(
+        completed_payout = float(all_nutri_appts.filter(
             payout_status="PAID"
-        ).aggregate(total=Sum("payout_amount"))["total"] or 0.0
+        ).aggregate(total=Sum("payout_amount"))["total"] or 0.0)
 
         total_bookings = all_nutri_appts.count()
 
@@ -1024,6 +1048,9 @@ class NutritionistPayoutsView(APIView):
         return Response({
             "summary": {
                 "total_earned": float(total_earned),
+                "gross_bookings_total": float(gross_bookings_total),
+                "platform_commission_total": float(platform_commission_total),
+                "commission_rate": float(platform_commission_percent),
                 "pending_payout": float(pending_payout),
                 "completed_payout": float(completed_payout),
                 "total_bookings": total_bookings,
@@ -1487,7 +1514,20 @@ class ConfirmQuotedPaymentView(APIView):
         else:
             appointment.payment_status = "PAID"
             appointment.payout_status = "PENDING"
-            appointment.payout_amount = appointment.fee_amount
+            from nutritionist.models import InHousePricingConfig, NutritionistProfile
+            _cfg = InHousePricingConfig.objects.first()
+            _prof = NutritionistProfile.objects.filter(user=appointment.nutritionist).first()
+            if _prof and _prof.custom_commission_percent is not None:
+                _comm_rate = float(_prof.custom_commission_percent)
+            elif _prof and getattr(_prof, 'nutritionist_type', '').lower() == 'expert':
+                _comm_rate = float(_cfg.expert_commission_percent) if _cfg and getattr(_cfg, 'expert_commission_percent', None) is not None else 5.0
+            else:
+                _comm_rate = float(_cfg.platform_commission_percent) if _cfg and _cfg.platform_commission_percent is not None else 5.0
+            _fee = float(appointment.fee_amount or 0.0)
+            _comm_amt = round(_fee * (_comm_rate / 100.0), 2)
+            appointment.commission_rate = _comm_rate
+            appointment.commission_amount = _comm_amt
+            appointment.payout_amount = max(0.00, round(_fee - _comm_amt, 2))
             appointment.status = "CONFIRMED"
 
         if meeting_link:

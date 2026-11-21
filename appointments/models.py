@@ -362,6 +362,16 @@ class Appointment(models.Model):
     # 📝 Clinical notes / observations and dietary advice given by nutritionist
     notes = models.TextField(blank=True, default="")
     instructions = models.TextField(blank=True, default="")
+    follow_up_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Recommended follow-up appointment date"
+    )
+    follow_up_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Follow-up instructions or recommendations for the patient"
+    )
 
     # 📋 Case-Based Pricing & Review for Variable Expert Appointments
     pricing_mode = models.CharField(
@@ -436,6 +446,18 @@ class Appointment(models.Model):
         decimal_places=2,
         default=0.00,
         help_text="Net payout owed/transferred to nutritionist",
+    )
+    commission_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=5.00,
+        help_text="Platform commission percentage applied (e.g. 5.00%)",
+    )
+    commission_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0.00,
+        help_text="Platform commission fee cut deducted from booking fee",
     )
     payout_marked_at = models.DateTimeField(null=True, blank=True)
     payout_transaction_ref = models.CharField(
