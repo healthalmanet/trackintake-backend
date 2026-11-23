@@ -1,6 +1,9 @@
 
 import sys
 import random
+import logging
+from datetime import timedelta
+from django.utils import timezone
 from django.core.cache import cache  # <-- THIS IS THE FIX
 from django.shortcuts import render
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
@@ -20,8 +23,10 @@ from allauth.socialaccount.providers.facebook.views import FacebookOAuth2Adapter
 from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter as GoogleOAuth2AdapterV2
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.conf import settings
-from .models import User # Make sure to import your User model
+from .models import User, EmailOTP # Make sure to import your User model
 from rest_framework.permissions import IsAuthenticated
+
+logger = logging.getLogger(__name__)
 from diet.models import DietRecommendation,DietFeedback
 from user.models import User
 from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
@@ -48,6 +53,7 @@ class MyTokenObtainPairView(TokenObtainPairView):
 class SendOTPView(views.APIView):
     """
     Step 1: Send OTP using Resend (non-blocking, safe for Render)
+    Stores OTP in persistent Database (EmailOTP) and cache for cross-worker reliability.
     """
     permission_classes = [permissions.AllowAny]
 
@@ -57,18 +63,33 @@ class SendOTPView(views.APIView):
         email = serializer.validated_data['email'].strip().lower()
 
         otp = f"{random.randint(100000, 999999)}"
+        expires_at = timezone.now() + timedelta(minutes=10)
 
-        # Clear any existing verification token on new OTP request
+        # 1. Store in Database for cross-worker, multi-dyno persistence on Render
+        EmailOTP.objects.update_or_create(
+            email=email,
+            defaults={
+                "otp": str(otp).strip(),
+                "verification_token": None,
+                "is_verified": False,
+                "expires_at": expires_at,
+            }
+        )
+
+        # 2. Clear any existing verification token on new OTP request & store in cache for 10 min
         cache.delete(f"verification_token_{email}")
-        # Store OTP for 10 min
         cache.set(f"otp_{email}", str(otp).strip(), timeout=600)
 
-        import sys
-        if 'test' not in sys.argv:
-            print(f"DEBUG: OTP for {email} is {otp}")  # <-- ADDED FOR TERMINAL LOGGING
+        # 3. Explicit console log for Render server logs (flush=True ensures immediate stdout visibility)
+        print("\n" + "=" * 60, flush=True)
+        print(f"🔑 [RENDER OTP] Email: {email} | OTP: {otp}", flush=True)
+        print(f"🔑 [RENDER OTP] Copy OTP code: {otp}", flush=True)
+        print("=" * 60 + "\n", flush=True)
+        logger.info(f"🔑 [RENDER OTP] Email: {email} | OTP: {otp}")
+        sys.stdout.flush()
 
         # RESEND SEND
-        from utils.resend_email import send_resend_email
+        from utils.resend_email import send_resend_email_async, send_resend_email
 
         html = f"""
             <h2>Your TrackEats OTP</h2>
@@ -77,19 +98,20 @@ class SendOTPView(views.APIView):
         """
 
         try:
-            send_resend_email(
+            send_resend_email_async(
                 to=email,
                 subject="Your TrackEats OTP Code",
                 html=html,
             )
         except Exception as email_err:
-            print(f"WARNING: Failed to send OTP email via Resend: {email_err}")
+            print(f"WARNING: Failed to send OTP email via Resend: {email_err}", flush=True)
 
         return Response({"message": "OTP sent."}, status=status.HTTP_200_OK)
 
 class VerifyOTPView(views.APIView):
     """
     Step 2: Client sends the email and OTP. If valid, issue a verification token.
+    Checks persistent Database first to ensure cross-worker consistency on Render.
     """
     permission_classes = [permissions.AllowAny]
 
@@ -99,28 +121,52 @@ class VerifyOTPView(views.APIView):
 
         email = serializer.validated_data['email'].strip().lower()
         otp = str(serializer.validated_data['otp']).strip()
+
+        # Check DB first (shared across all Gunicorn workers)
+        db_record = EmailOTP.objects.filter(email=email).first()
         cached_otp = cache.get(f"otp_{email}")
         cached_token = cache.get(f"verification_token_{email}")
 
-        if 'test' not in sys.argv:
-            print(f"DEBUG: VerifyOTP for email='{email}', submitted_otp='{otp}', cached_otp='{cached_otp}', cached_token={'exists' if cached_token else 'none'}")
+        expected_otp = (db_record.otp if db_record else None) or cached_otp
+        is_expired = db_record.is_expired() if db_record else False
+
+        print(f"🔍 [RENDER OTP VERIFY] Email: '{email}' | Submitted: '{otp}' | Expected: '{expected_otp}' | DB Record Exists: {bool(db_record)} | Expired: {is_expired}", flush=True)
+        logger.info(f"🔍 [RENDER OTP VERIFY] Email: '{email}' | Submitted: '{otp}' | Expected: '{expected_otp}'")
 
         # If already verified and token exists, return it
-        if cached_token and (not cached_otp or str(cached_otp).strip() == otp):
+        valid_token = cached_token or (db_record.verification_token if db_record and db_record.is_verified and not is_expired else None)
+        if valid_token and (not expected_otp or str(expected_otp).strip() == otp):
+            print(f"✅ [RENDER OTP] Already verified with token: {valid_token}", flush=True)
             return Response(
-                {"message": "Email verified successfully.", "verification_token": cached_token},
+                {"message": "Email verified successfully.", "verification_token": valid_token},
                 status=status.HTTP_200_OK
             )
 
-        if not cached_otp or str(cached_otp).strip() != otp:
+        if is_expired or not expected_otp or str(expected_otp).strip() != otp:
+            print(f"❌ [RENDER OTP FAILED] Invalid or expired OTP for {email}. Entered: '{otp}', Expected: '{expected_otp}'", flush=True)
             return Response({"error": "Invalid or expired OTP."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Issue a secure, short-lived verification token
-        if not cached_token:
-            verification_token = secrets.token_urlsafe(32)
-            cache.set(f"verification_token_{email}", verification_token, timeout=600)
+        verification_token = secrets.token_urlsafe(32)
+
+        # Save to DB and cache
+        if db_record:
+            db_record.is_verified = True
+            db_record.verification_token = verification_token
+            db_record.save(update_fields=["is_verified", "verification_token"])
         else:
-            verification_token = cached_token
+            EmailOTP.objects.create(
+                email=email,
+                otp=otp,
+                verification_token=verification_token,
+                is_verified=True,
+                expires_at=timezone.now() + timedelta(minutes=15)
+            )
+
+        cache.set(f"verification_token_{email}", verification_token, timeout=900)
+
+        print(f"✅ [RENDER OTP VERIFIED SUCCESS] Email: {email} | Token: {verification_token}", flush=True)
+        logger.info(f"✅ [RENDER OTP VERIFIED SUCCESS] Email: {email}")
 
         return Response(
             {"message": "Email verified successfully.", "verification_token": verification_token},
@@ -163,11 +209,24 @@ class RegisterView(views.APIView):
         verification_token = request.data.get("verification_token")
         cached_token = cache.get(f"verification_token_{email}")
 
-        if not cached_token or cached_token != verification_token:
+        # Check DB for cross-worker token validity on Render
+        db_valid = False
+        if verification_token:
+            db_valid = EmailOTP.objects.filter(
+                email=email,
+                verification_token=verification_token,
+                is_verified=True,
+                expires_at__gte=timezone.now()
+            ).exists()
+
+        if not (cached_token == verification_token or db_valid):
+            print(f"❌ [RENDER REGISTRATION TOKEN MISMATCH] Email: {email} | Submitted: {verification_token} | Cached: {cached_token} | DB Valid: {db_valid}", flush=True)
             return Response(
                 {"message": "Invalid or expired verification token. Please verify your email again."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        print(f"✅ [RENDER REGISTRATION TOKEN VERIFIED] Email: {email}", flush=True)
 
         # ── Step 2: Validate & create user via RegisterSerializer ─────────────
         serializer = RegisterSerializer(data=request.data)
@@ -176,9 +235,10 @@ class RegisterView(views.APIView):
 
         user = serializer.save()
 
-        # Clear the verification token and OTP cache after successful registration
+        # Clear the verification token and OTP cache + DB after successful registration
         cache.delete(f"verification_token_{email}")
         cache.delete(f"otp_{email}")
+        EmailOTP.objects.filter(email=email).delete()
 
         # ── Step 3: Link payment & activate plan if payment exists ──────────
         if payment and payment.user is None:
