@@ -113,3 +113,34 @@ class ModelRetrainLog(models.Model):
         null=True,
         blank=True
     )
+
+
+# ---------------------- Email OTP Verification Model ----------------------
+class EmailOTP(models.Model):
+    """
+    Persistent store for email OTPs and verification tokens.
+    Guarantees cross-worker, multi-dyno consistency across all Gunicorn processes.
+    """
+    email = models.EmailField(db_index=True)
+    otp = models.CharField(max_length=6)
+    verification_token = models.CharField(max_length=128, blank=True, null=True, db_index=True)
+    is_verified = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        verbose_name = "Email OTP"
+        verbose_name_plural = "Email OTPs"
+        indexes = [
+            models.Index(fields=["email", "otp"]),
+            models.Index(fields=["email", "verification_token"]),
+            models.Index(fields=["email", "-created_at"]),
+        ]
+
+    def is_expired(self):
+        from django.utils import timezone
+        return timezone.now() > self.expires_at
+
+    def __str__(self):
+        return f"{self.email} - {self.otp} (verified={self.is_verified})"
