@@ -999,6 +999,40 @@ class NutritionistPayoutsView(APIView):
         if payout_status and payout_status != "ALL":
             qs = qs.filter(payout_status=payout_status)
 
+        # Date range filtering (by slot_date or created_at)
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+        date_single = request.query_params.get("date")
+
+        date_q = Q()
+        if start_date and end_date:
+            date_q = (
+                Q(slot_date__range=(start_date, end_date)) |
+                Q(slot__date__range=(start_date, end_date)) |
+                Q(created_at__date__range=(start_date, end_date))
+            )
+        elif start_date:
+            date_q = (
+                Q(slot_date__gte=start_date) |
+                Q(slot__date__gte=start_date) |
+                Q(created_at__date__gte=start_date)
+            )
+        elif end_date:
+            date_q = (
+                Q(slot_date__lte=end_date) |
+                Q(slot__date__lte=end_date) |
+                Q(created_at__date__lte=end_date)
+            )
+        elif date_single:
+            date_q = (
+                Q(slot_date=date_single) |
+                Q(slot__date=date_single) |
+                Q(created_at__date=date_single)
+            )
+
+        if date_q:
+            qs = qs.filter(date_q)
+
         # Financial summary aggregation
         from nutritionist.models import InHousePricingConfig, NutritionistProfile
         _cfg = InHousePricingConfig.objects.first()
@@ -1015,6 +1049,8 @@ class NutritionistPayoutsView(APIView):
         ).filter(
             Q(appointment_type="VIRTUAL") | Q(fee_amount__gt=0)
         )
+        if date_q:
+            all_nutri_appts = all_nutri_appts.filter(date_q)
 
         gross_bookings_total = float(all_nutri_appts.filter(
             payout_status__in=["PAID", "PENDING"]

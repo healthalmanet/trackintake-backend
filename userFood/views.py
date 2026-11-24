@@ -250,7 +250,19 @@ class UserMealViewSet(viewsets.ModelViewSet):
     filterset_fields = ['date', 'meal_type']
 
     def get_queryset(self):
-        return UserMeal.objects.filter(user=self.request.user).order_by('-consumed_at')
+        qs = UserMeal.objects.filter(user=self.request.user).order_by('-consumed_at')
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        date_single = self.request.query_params.get('date')
+        if start_date and end_date:
+            qs = qs.filter(date__range=(start_date, end_date))
+        elif start_date:
+            qs = qs.filter(date__gte=start_date)
+        elif end_date:
+            qs = qs.filter(date__lte=end_date)
+        elif date_single:
+            qs = qs.filter(date=date_single)
+        return qs
 
     # --- THIS IS THE FIXED FUNCTION ---
 # --- THIS IS THE UPDATED FUNCTION ---
@@ -493,64 +505,74 @@ class UserMealViewSet(viewsets.ModelViewSet):
 
 
 # RENAMED and REFACTORED for clarity and correct functionality
-# 7day
+# Daily / Multi-day summary endpoint
 class DailyUserMealSummaryView(APIView):
     """
-    Provides a 7-day summary of meals, ending on a specific date provided by the user.
-    This replaces DailyUserMealSummaryView to be more explicit and timezone-safe.
-    It expects a query parameter like: /api/your-endpoint/?end_date=2023-10-27
+    Provides a daily breakdown summary of meals for a date range (or 7-day summary ending on end_date).
+    Supports:
+      - ?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD (custom range)
+      - ?end_date=YYYY-MM-DD (defaults to 7-day range ending on end_date)
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # The frontend provides the user's local "today" as the end_date.
         end_date_str = request.query_params.get('end_date')
+        start_date_str = request.query_params.get('start_date')
 
-        if not end_date_str:
-            # If no date is provided, it's an error. The client must specify the date.
-            return Response({"error": "An 'end_date' query parameter is required. Use YYYY-MM-DD format."}, status=status.HTTP_400_BAD_REQUEST)
+        if not end_date_str and not start_date_str:
+            return Response({"error": "An 'end_date' or 'start_date' query parameter is required. Use YYYY-MM-DD format."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Parse the string from the client into a date object.
-            end_date = parse_date(end_date_str)
-            if not end_date:
-                raise ValueError  # parse_date returns None on failure
+            if end_date_str and start_date_str:
+                start_date = parse_date(start_date_str)
+                end_date = parse_date(end_date_str)
+                if not start_date or not end_date:
+                    raise ValueError
+                if start_date > end_date:
+                    start_date, end_date = end_date, start_date
+            elif end_date_str:
+                end_date = parse_date(end_date_str)
+                if not end_date:
+                    raise ValueError
+                start_date = end_date - timedelta(days=6)
+            else:
+                start_date = parse_date(start_date_str)
+                if not start_date:
+                    raise ValueError
+                end_date = start_date
 
-            # Calculate the start date for the 7-day range.
-            start_date = end_date - timedelta(days=6)
-
-            # Filter based on the user-specific date range.
-            # Assumes your UserMeal model has a `date` field of type DateField.
             meals = UserMeal.objects.filter(
                 user=request.user, date__range=(start_date, end_date))
 
         except (ValueError, TypeError):
-            return Response({"error": "Invalid date format for 'end_date'. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # The rest of the logic remains the same.
         summary = (
             meals.values('date')
             .annotate(
                 calories=Sum('calories'),
                 protein=Sum('protein'),
                 carbs=Sum('carbs'),
-                fats=Sum('fats')
+                fats=Sum('fats'),
+                sugar=Sum('sugar'),
+                fiber=Sum('fiber')
             )
             .order_by('date')
         )
 
-        # To ensure the frontend receives a full 7-day structure even if some days have no meals,
-        # you can create a date map.
         date_map = {item['date']: item for item in summary}
         response_data = []
-        for i in range(7):
+        days_diff = (end_date - start_date).days + 1
+        for i in range(days_diff):
             current_date = start_date + timedelta(days=i)
             day_data = date_map.get(current_date, {
                 'date': current_date.isoformat(),
                 'calories': 0,
                 'protein': 0,
                 'carbs': 0,
-                'fats': 0
+                'fats': 0,
+                'sugar': 0,
+                'fiber': 0
             })
             response_data.append(day_data)
 
@@ -581,46 +603,51 @@ def targetNutrients(request):
 
 class targetNutrientsUpdate(APIView):
     """
-    Provides a total summary for a single day.
-    This view MUST receive a 'date' parameter from the client to avoid timezone issues.
-    Example: /api/daily-summary/?date=2023-10-27
+    Provides a total summary for a single day or custom date range.
+    Accepts:
+      - ?date=YYYY-MM-DD (single day)
+      - ?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD (date range)
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # Get the target date string from the query parameters.
         date_str = request.query_params.get('date')
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
 
-        if not date_str:
-            return Response({"error": "A 'date' query parameter is required. Use YYYY-MM-DD format."}, status=status.HTTP_400_BAD_REQUEST)
+        if not date_str and not (start_date_str and end_date_str):
+            return Response(
+                {"error": "A 'date' or both 'start_date' and 'end_date' query parameters are required. Use YYYY-MM-DD format."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
-            # This is the user's local date, parsed into a date object.
-            target_date = parse_date(date_str)
-            if not target_date:
-                raise ValueError()
+            if start_date_str and end_date_str:
+                start_date = parse_date(start_date_str)
+                end_date = parse_date(end_date_str)
+                if not start_date or not end_date:
+                    raise ValueError()
+                if start_date > end_date:
+                    start_date, end_date = end_date, start_date
+            else:
+                target_date = parse_date(date_str)
+                if not target_date:
+                    raise ValueError()
+                start_date = target_date
+                end_date = target_date
         except ValueError:
             return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create a timezone-aware datetime range for the user's entire local day.
-        # This assumes UserMeal.consumed_at is a timezone-aware DateTimeField.
-        start_of_day = datetime.combine(target_date, time.min)
-        end_of_day = datetime.combine(target_date, time.max)
+        start_of_day = datetime.combine(start_date, time.min)
+        end_of_day = datetime.combine(end_date, time.max)
 
-        # If your project uses timezones (settings.USE_TZ=True), you should make these
-        # datetimes aware of the current timezone to match the database.
-        # from django.utils.timezone import make_aware
-        # start_of_day = make_aware(datetime.combine(target_date, time.min))
-        # end_of_day = make_aware(datetime.combine(target_date, time.max))
-
-        # The filter now correctly queries for meals within the user's local day.
-        meals_today = UserMeal.objects.filter(
+        meals_in_range = UserMeal.objects.filter(
             user=request.user,
             consumed_at__gte=start_of_day,
             consumed_at__lte=end_of_day
         )
 
-        totals = meals_today.aggregate(
+        totals = meals_in_range.aggregate(
             total_calories=Sum("calories", default=0),
             total_protein=Sum("protein", default=0),
             total_carbs=Sum("carbs", default=0),
@@ -629,14 +656,19 @@ class targetNutrientsUpdate(APIView):
             total_fiber=Sum("fiber", default=0),
         )
 
+        days_count = (end_date - start_date).days + 1
+
         return Response({
-            "date": target_date,
-            "calories": totals["total_calories"],
-            "protein": totals["total_protein"],
-            "carbs": totals["total_carbs"],
-            "fats": totals["total_fats"],
-            "sugar": totals["total_sugar"],
-            "fiber": totals["total_fiber"],
+            "date": start_date.isoformat() if start_date == end_date else None,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "days_count": days_count,
+            "calories": totals["total_calories"] or 0,
+            "protein": totals["total_protein"] or 0,
+            "carbs": totals["total_carbs"] or 0,
+            "fats": totals["total_fats"] or 0,
+            "sugar": totals["total_sugar"] or 0,
+            "fiber": totals["total_fiber"] or 0,
         })
 
 

@@ -19,6 +19,18 @@ class UserSerializer1(serializers.ModelSerializer):
     """
     goal = serializers.CharField(source='userprofile.goal', read_only=True, default='Not Set')
     date_of_birth = serializers.DateField(source='userprofile.date_of_birth', read_only=True, default=None)
+    gender = serializers.CharField(source='userprofile.gender', read_only=True, default='')
+    diet_type = serializers.CharField(source='userprofile.diet_type', read_only=True, default='')
+    activity_level = serializers.CharField(source='userprofile.activity_level', read_only=True, default='')
+    bmi = serializers.FloatField(source='userprofile.bmi', read_only=True, default=None)
+    is_diabetic = serializers.BooleanField(source='userprofile.is_diabetic', read_only=True, default=False)
+    is_hypertensive = serializers.BooleanField(source='userprofile.is_hypertensive', read_only=True, default=False)
+    has_heart_condition = serializers.BooleanField(source='userprofile.has_heart_condition', read_only=True, default=False)
+    has_thyroid_disorder = serializers.BooleanField(source='userprofile.has_thyroid_disorder', read_only=True, default=False)
+    has_arthritis = serializers.BooleanField(source='userprofile.has_arthritis', read_only=True, default=False)
+    has_gastric_issues = serializers.BooleanField(source='userprofile.has_gastric_issues', read_only=True, default=False)
+    allergies = serializers.CharField(source='userprofile.allergies', read_only=True, default='')
+    mobile_number = serializers.CharField(source='userprofile.mobile_number', read_only=True, default='')
     specializations = serializers.SerializerMethodField()
     languages_spoken = serializers.SerializerMethodField()
     professional_title = serializers.CharField(source='nutritionist_profile.professional_title', read_only=True, default='Clinical Nutritionist')
@@ -28,6 +40,9 @@ class UserSerializer1(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'email', 'full_name', 'role', 'date_joined', 'is_active', 'goal', 'date_of_birth',
+            'gender', 'diet_type', 'activity_level', 'bmi', 'is_diabetic', 'is_hypertensive',
+            'has_heart_condition', 'has_thyroid_disorder', 'has_arthritis', 'has_gastric_issues',
+            'allergies', 'mobile_number',
             'specializations', 'languages_spoken', 'professional_title', 'qualification'
         ]
 

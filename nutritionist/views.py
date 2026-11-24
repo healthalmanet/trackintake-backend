@@ -138,6 +138,7 @@ class AssignPatientAPIView(APIView):
 class AssignedPatientsView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated, IsNutritionist]
     serializer_class = UserSerializer1
+    pagination_class = None
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['email']
     search_fields = ['full_name', 'email']
