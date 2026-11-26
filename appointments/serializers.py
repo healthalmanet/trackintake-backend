@@ -48,15 +48,17 @@ class AvailabilitySlotSerializer(serializers.ModelSerializer):
         profile = self._get_profile(obj)
         if not profile:
             return 0.0
-        val = profile.online_price or 0.0
-        return float(val)
+        from nutritionist.models import get_effective_consultation_prices
+        eff_online, _ = get_effective_consultation_prices(profile)
+        return eff_online
 
     def get_offline_price(self, obj):
         profile = self._get_profile(obj)
         if not profile:
             return 0.0
-        val = profile.offline_price or 0.0
-        return float(val)
+        from nutritionist.models import get_effective_consultation_prices
+        _, eff_offline = get_effective_consultation_prices(profile)
+        return eff_offline
 
     def get_offline_payment_required(self, obj):
         profile = self._get_profile(obj)
@@ -72,9 +74,11 @@ class AvailabilitySlotSerializer(serializers.ModelSerializer):
         profile = self._get_profile(obj)
         if not profile:
             return 0.0
+        from nutritionist.models import get_effective_consultation_prices
+        eff_online, eff_offline = get_effective_consultation_prices(profile)
         if obj.slot_type == "IN_PERSON":
-            return float(profile.offline_price or 0.0)
-        return float(profile.online_price or 0.0)
+            return eff_offline
+        return eff_online
 
 
 class AvailabilitySlotCreateSerializer(serializers.ModelSerializer):
@@ -200,13 +204,15 @@ class AppointmentCreateSerializer(serializers.Serializer):
 
         nutri_profile = getattr(slot.nutritionist, "nutritionist_profile", None)
 
-        # Determine real price from nutritionist profile
+        # Determine real price from nutritionist profile (respecting enforced platform fixed rates)
         real_price = 0.0
         if nutri_profile:
+            from nutritionist.models import get_effective_consultation_prices
+            eff_online, eff_offline = get_effective_consultation_prices(nutri_profile)
             if appointment_type == "IN_PERSON":
-                real_price = float(nutri_profile.offline_price or 0.0)
+                real_price = eff_offline
             else:
-                real_price = float(nutri_profile.online_price or 0.0)
+                real_price = eff_online
 
         # Determine offline payment policy
         offline_payment_required = True

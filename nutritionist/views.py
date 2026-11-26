@@ -1194,6 +1194,17 @@ class NutritionistSelfProfileView(APIView):
                 "is_active": False,
             }
 
+        from .models import InHousePricingConfig, get_effective_consultation_prices
+        central_cfg = InHousePricingConfig.objects.first()
+        eff_online, eff_offline = get_effective_consultation_prices(nutri_profile, central_cfg)
+        pricing_config = {
+            "inhouse_online_price": float(central_cfg.online_price) if central_cfg else 499.0,
+            "inhouse_offline_price": float(central_cfg.offline_price) if central_cfg else 499.0,
+            "expert_fixed_pricing_enabled": bool(getattr(central_cfg, "expert_fixed_pricing_enabled", False)) if central_cfg else False,
+            "expert_online_price": float(getattr(central_cfg, "expert_online_price", 999.0)) if central_cfg else 999.0,
+            "expert_offline_price": float(getattr(central_cfg, "expert_offline_price", 999.0)) if central_cfg else 999.0,
+        }
+
         return Response({
             "user": {
                 "id": user.id,
@@ -1221,8 +1232,11 @@ class NutritionistSelfProfileView(APIView):
                 "is_online_available": nutri_profile.is_online_available,
                 "is_offline_available": nutri_profile.is_offline_available,
                 "offline_location": nutri_profile.offline_location or "",
-                "online_price": nutri_profile.online_price,
-                "offline_price": nutri_profile.offline_price,
+                "online_price": eff_online,
+                "offline_price": eff_offline,
+                "expert_fixed_pricing_enabled": pricing_config["expert_fixed_pricing_enabled"],
+                "expert_online_price": pricing_config["expert_online_price"],
+                "expert_offline_price": pricing_config["expert_offline_price"],
                 "offline_payment_required": nutri_profile.offline_payment_required,
                 "pending_online_price": nutri_profile.pending_online_price,
                 "pending_offline_price": nutri_profile.pending_offline_price,
@@ -1365,11 +1379,14 @@ class NutritionistSelfProfileView(APIView):
                 has_file_uploaded = True
 
         # Consultation Rates Updates:
-        # - Specialist Experts can customize their consultation rates.
+        # - Specialist Experts can customize their consultation rates unless platform fixed expert pricing is enforced.
         # - In-House Nutritionists are governed by central platform rates and cannot change fees.
+        from .models import InHousePricingConfig
+        central_cfg = InHousePricingConfig.objects.first()
         is_expert = (nutri_profile.nutritionist_type == NutritionistProfile.NutritionistType.EXPERT)
+        expert_fixed_enforced = bool(central_cfg and getattr(central_cfg, "expert_fixed_pricing_enabled", False))
 
-        if is_expert:
+        if is_expert and not expert_fixed_enforced:
             if "online_price" in data and data.get("online_price") not in [None, ""]:
                 try:
                     p = float(data.get("online_price"))
@@ -1386,10 +1403,12 @@ class NutritionistSelfProfileView(APIView):
                     nutri_fields_to_update.extend(["offline_price", "pending_offline_price"])
                 except (ValueError, TypeError):
                     pass
+        elif is_expert and expert_fixed_enforced:
+            nutri_profile.online_price = central_cfg.expert_online_price
+            nutri_profile.offline_price = central_cfg.expert_offline_price
+            nutri_fields_to_update.extend(["online_price", "offline_price"])
         else:
             # Enforce central in-house platform rates for in-house practitioners
-            from .models import InHousePricingConfig
-            central_cfg = InHousePricingConfig.objects.first()
             if central_cfg:
                 nutri_profile.online_price = central_cfg.online_price
                 nutri_profile.offline_price = central_cfg.offline_price
@@ -1414,6 +1433,25 @@ class NutritionistSelfProfileView(APIView):
             nutri_profile.save(update_fields=list(set(nutri_fields_to_update)))
 
         return Response({"message": "Profile and consultation rates updated successfully."}, status=status.HTTP_200_OK)
+
+
+class PlatformPricingConfigView(APIView):
+    """
+    Publicly readable endpoint exposing central consultation pricing policy
+    so Registration, Profile, and Availability UIs can reflect enforced rates.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from .models import InHousePricingConfig
+        cfg = InHousePricingConfig.objects.first()
+        return Response({
+            "inhouse_online_price": float(cfg.online_price) if cfg else 499.0,
+            "inhouse_offline_price": float(cfg.offline_price) if cfg else 499.0,
+            "expert_fixed_pricing_enabled": bool(getattr(cfg, "expert_fixed_pricing_enabled", False)) if cfg else False,
+            "expert_online_price": float(getattr(cfg, "expert_online_price", 999.0)) if cfg else 999.0,
+            "expert_offline_price": float(getattr(cfg, "expert_offline_price", 999.0)) if cfg else 999.0,
+        }, status=status.HTTP_200_OK)
 
 
 class AdminNutritionistPricingListView(APIView):

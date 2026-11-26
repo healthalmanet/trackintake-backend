@@ -26,6 +26,7 @@ from .views import (
     RestoreDietPlanView,
     NutritionistSelfProfileView,
     NutritionistChangePasswordView,
+    PlatformPricingConfigView,
     AdminNutritionistPricingListView,
     AdminNutritionistPricingApproveView,
     AdminNutritionistVerifyView,
@@ -35,6 +36,7 @@ urlpatterns = [
     # ===================================================================
     # Nutritionist - General & Patient Management
     # ===================================================================
+    path('pricing-config/', PlatformPricingConfigView.as_view(), name='platform-pricing-config'),
     path('nutritionist/me/profile/', NutritionistSelfProfileView.as_view(), name='nutritionist-self-profile'),
     path('nutritionist/me/change-password/', NutritionistChangePasswordView.as_view(), name='nutritionist-change-password'),
     path('admin/nutritionist-pricing/', AdminNutritionistPricingListView.as_view(), name='admin-nutritionist-pricing-list'),

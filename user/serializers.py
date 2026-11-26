@@ -457,8 +457,18 @@ class RegisterSerializer(serializers.ModelSerializer):
                 except (ValueError, TypeError):
                     return 0.0
 
-            nutri_profile.online_price = _clean_price(online_price)
-            nutri_profile.offline_price = _clean_price(offline_price)
+            # Enforce central platform rates when applicable
+            from nutritionist.models import InHousePricingConfig
+            central_cfg = InHousePricingConfig.objects.first()
+            if nutritionist_type == 'inhouse' and central_cfg:
+                nutri_profile.online_price = central_cfg.online_price
+                nutri_profile.offline_price = central_cfg.offline_price
+            elif nutritionist_type == 'expert' and central_cfg and getattr(central_cfg, 'expert_fixed_pricing_enabled', False):
+                nutri_profile.online_price = central_cfg.expert_online_price
+                nutri_profile.offline_price = central_cfg.expert_offline_price
+            else:
+                nutri_profile.online_price = _clean_price(online_price)
+                nutri_profile.offline_price = _clean_price(offline_price)
             nutri_profile.pending_online_price = None
             nutri_profile.pending_offline_price = None
             nutri_profile.price_approval_status = "approved"

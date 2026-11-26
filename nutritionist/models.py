@@ -204,6 +204,25 @@ class InHousePricingConfig(models.Model):
         verbose_name="Expert Commission Cut (%)",
         help_text="Percentage retained by TrackIntake from expert specialists online consultation fees"
     )
+    expert_fixed_pricing_enabled = models.BooleanField(
+        default=False,
+        verbose_name="Enforce Fixed Consultation Rates for Expert Fixed Slots",
+        help_text="When enabled, Expert specialists use the platform-controlled fixed online/offline rates for Fixed Price Slots (Variable Case Slots remain nutritionist-controlled)."
+    )
+    expert_online_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=999.00,
+        verbose_name="Fixed Expert Online Rate (₹)",
+        help_text="Enforced consultation fee for expert virtual Fixed Price Slots when enabled"
+    )
+    expert_offline_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=999.00,
+        verbose_name="Fixed Expert In-Clinic Rate (₹)",
+        help_text="Enforced consultation fee for expert in-clinic Fixed Price Slots when enabled"
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -212,6 +231,24 @@ class InHousePricingConfig(models.Model):
 
     def __str__(self):
         return f"{self.title}: Online ₹{self.online_price} | Offline ₹{self.offline_price}"
+
+
+def get_effective_consultation_prices(profile, config=None):
+    """
+    Returns (online_price, offline_price) as floats for a NutritionistProfile,
+    respecting global InHousePricingConfig rules for both In-House and Expert Fixed Slots.
+    """
+    if not profile:
+        return 0.0, 0.0
+    if config is None:
+        config = InHousePricingConfig.objects.first()
+
+    nutri_type = (getattr(profile, "nutritionist_type", "") or "").lower()
+    if nutri_type == "inhouse" and config:
+        return float(config.online_price or 0.0), float(config.offline_price or 0.0)
+    if nutri_type == "expert" and config and getattr(config, "expert_fixed_pricing_enabled", False):
+        return float(config.expert_online_price or 0.0), float(config.expert_offline_price or 0.0)
+    return float(profile.online_price or 0.0), float(profile.offline_price or 0.0)
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
