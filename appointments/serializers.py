@@ -71,6 +71,8 @@ class AvailabilitySlotSerializer(serializers.ModelSerializer):
         return profile.offline_location if profile else ""
 
     def get_price(self, obj):
+        if getattr(obj, "pricing_mode", "FIXED") == "VARIABLE":
+            return 0.0
         profile = self._get_profile(obj)
         if not profile:
             return 0.0
