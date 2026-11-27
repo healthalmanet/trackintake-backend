@@ -1,8 +1,10 @@
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed
 from django.core.cache import cache
 
 from diet.models import DietFeedback
+from .blocking import check_registration_block, is_contact_blocked, normalize_email
 from .models import User, Feedback
 
 
@@ -14,8 +16,13 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
 
     def validate(self, attrs):
-        email = attrs.get("email") or attrs.get("username")
+        email = normalize_email(attrs.get("email") or attrs.get("username"))
         password = attrs.get("password")
+
+        blocked, block_msg = is_contact_blocked(email=email)
+        if blocked:
+            raise AuthenticationFailed(block_msg)
+
         try:
             data = super().validate(attrs)
         except Exception as e:
@@ -105,7 +112,10 @@ class EmailSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         value = value.lower().strip()
-        if User.objects.filter(email=value, is_active=True).exists():
+        blocked, block_msg = is_contact_blocked(email=value)
+        if blocked:
+            raise serializers.ValidationError(block_msg)
+        if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("A user with this email is already registered.")
         return value
 
@@ -326,24 +336,65 @@ class RegisterSerializer(serializers.ModelSerializer):
         email = data.get('email')
         token = data.get('verification_token')
 
+        # Check if email or mobile number belongs to a blocked user/contact
+        block_errors = check_registration_block(
+            email=email,
+            phone_number=data.get('phone_number'),
+        )
+        if block_errors:
+            raise serializers.ValidationError(block_errors)
+
         # Check if user with email already exists
         if User.objects.filter(email=email).exists():
             raise serializers.ValidationError({
                 "email": "An account with this email address already exists. Please log in."
             })
 
-        # ── Step 1: Validate OTP verification token ───────────────────────────
+        # ── Step 1: Validate OTP verification token (cache or DB fallback) ────
+        from django.utils import timezone
+        from .models import EmailOTP
+
+        token_str = str(token or "").strip()
         cached_token = cache.get(f"verification_token_{email}")
-        if not cached_token:
+        db_valid = False
+        if token_str:
+            db_valid = EmailOTP.objects.filter(
+                email=email,
+                verification_token=token_str,
+                is_verified=True,
+                expires_at__gte=timezone.now(),
+            ).exists()
+
+        if not ((cached_token and str(cached_token).strip() == token_str) or db_valid):
             raise serializers.ValidationError({
-                "token": "Verification token expired or missing. Please request a new OTP code."
-            })
-        if str(cached_token).strip() != str(token).strip():
-            raise serializers.ValidationError({
-                "token": "Invalid OTP verification code."
+                "token": "Verification token expired or invalid. Please verify your email OTP again."
             })
 
-        # Step 2: Specific validation for nutritionist role
+        # Step 2: Validate uploaded document sizes & formats
+        max_file_bytes = 10 * 1024 * 1024  # 10 MB per file
+        doc_exts = {'.pdf', '.jpg', '.jpeg', '.png', '.webp', '.doc', '.docx', '.rtf', '.odt'}
+        img_exts = {'.jpg', '.jpeg', '.png', '.webp'}
+        file_errors = {}
+        for f_field in [
+            'qualification_certificate', 'registration_certificate', 'government_id',
+            'experience_certificate', 'additional_certifications', 'profile_photo'
+        ]:
+            f_obj = data.get(f_field)
+            if not f_obj:
+                continue
+            if getattr(f_obj, 'size', 0) > max_file_bytes:
+                file_errors[f_field] = "File size must be 10 MB or smaller."
+                continue
+            import os
+            ext = os.path.splitext(str(getattr(f_obj, 'name', '') or ''))[1].lower()
+            allowed_exts = img_exts if f_field == 'profile_photo' else doc_exts
+            if ext and ext not in allowed_exts:
+                allowed_label = "JPG, PNG, WEBP" if f_field == 'profile_photo' else "PDF, JPG, PNG, WEBP, DOC, DOCX"
+                file_errors[f_field] = f"Unsupported file format ({ext}). Allowed: {allowed_label}."
+        if file_errors:
+            raise serializers.ValidationError(file_errors)
+
+        # Step 3: Specific validation for nutritionist role
         role = data.get('role', 'user')
         if role == 'nutritionist':
             is_offline = data.get('is_offline_available', False)
@@ -394,87 +445,99 @@ class RegisterSerializer(serializers.ModelSerializer):
         password = validated_data['password']
         role = validated_data.get('role', 'user')
 
-        user = User.objects.create_user(
-            email=email,
-            full_name=full_name,
-            phone_number=phone_number,
-            password=password,
-            role=role,
-        )
-        cache.delete(f"verification_token_{email}")
+        from django.db import transaction
+        import logging
+        logger = logging.getLogger(__name__)
 
-        # Pre-fill UserProfile
-        from userProfile.models import UserProfile
-        user_profile, _ = UserProfile.objects.get_or_create(user=user)
-        if phone_number:
-            user_profile.mobile_number = phone_number
-        if gender:
-            user_profile.gender = gender
-        if date_of_birth:
-            user_profile.date_of_birth = date_of_birth
-        user_profile.save()
+        with transaction.atomic():
+            user = User.objects.create_user(
+                email=email,
+                full_name=full_name,
+                phone_number=phone_number,
+                password=password,
+                role=role,
+            )
 
-        # Pre-fill NutritionistProfile if nutritionist role
-        if role == "nutritionist":
-            from nutritionist.models import NutritionistProfile
-            nutri_profile, _ = NutritionistProfile.objects.get_or_create(user=user)
-            nutri_profile.nutritionist_type = nutritionist_type
-            nutri_profile.is_online_available = is_online_available
-            nutri_profile.is_offline_available = is_offline_available
-            nutri_profile.offline_location = offline_location or ""
+            # Pre-fill UserProfile
+            from userProfile.models import UserProfile
+            user_profile, _ = UserProfile.objects.get_or_create(user=user)
+            if phone_number:
+                user_profile.mobile_number = phone_number
+            if gender:
+                user_profile.gender = gender
+            if date_of_birth:
+                user_profile.date_of_birth = date_of_birth
+            user_profile.save()
 
-            nutri_profile.professional_title = professional_title or "Clinical Nutritionist"
-            nutri_profile.qualification = qualification or ""
-            nutri_profile.registration_number = registration_number or ""
-            nutri_profile.issuing_authority = issuing_authority or ""
-            nutri_profile.years_of_experience = years_of_experience or 0
-            nutri_profile.current_organization = current_organization or ""
-            nutri_profile.professional_bio = professional_bio or ""
-            nutri_profile.languages_spoken = languages_spoken or []
-            nutri_profile.specializations = specializations or []
+            # Pre-fill NutritionistProfile if nutritionist role
+            if role == "nutritionist":
+                from nutritionist.models import NutritionistProfile
+                nutri_profile, _ = NutritionistProfile.objects.get_or_create(user=user)
+                nutri_profile.nutritionist_type = nutritionist_type
+                nutri_profile.is_online_available = is_online_available
+                nutri_profile.is_offline_available = is_offline_available
+                nutri_profile.offline_location = offline_location or ""
 
-            if qualification_certificate:
-                nutri_profile.qualification_certificate = qualification_certificate
-            if registration_certificate:
-                nutri_profile.registration_certificate = registration_certificate
-            if government_id:
-                nutri_profile.government_id = government_id
-            if experience_certificate:
-                nutri_profile.experience_certificate = experience_certificate
-            if additional_certifications:
-                nutri_profile.additional_certifications = additional_certifications
-            if profile_photo:
-                nutri_profile.profile_photo = profile_photo
+                nutri_profile.professional_title = professional_title or "Clinical Nutritionist"
+                nutri_profile.qualification = qualification or ""
+                nutri_profile.registration_number = registration_number or ""
+                nutri_profile.issuing_authority = issuing_authority or ""
+                nutri_profile.years_of_experience = years_of_experience or 0
+                nutri_profile.current_organization = current_organization or ""
+                nutri_profile.professional_bio = professional_bio or ""
+                nutri_profile.languages_spoken = languages_spoken or []
+                nutri_profile.specializations = specializations or []
 
-            nutri_profile.offline_payment_required = offline_payment_required
-            nutri_profile.pending_offline_payment_required = offline_payment_required
+                if qualification_certificate:
+                    nutri_profile.qualification_certificate = qualification_certificate
+                if registration_certificate:
+                    nutri_profile.registration_certificate = registration_certificate
+                if government_id:
+                    nutri_profile.government_id = government_id
+                if experience_certificate:
+                    nutri_profile.experience_certificate = experience_certificate
+                if additional_certifications:
+                    nutri_profile.additional_certifications = additional_certifications
+                if profile_photo:
+                    nutri_profile.profile_photo = profile_photo
 
-            # Direct pricing with validation guardrails (no manual price approval queue)
-            def _clean_price(val):
+                nutri_profile.offline_payment_required = offline_payment_required
+                nutri_profile.pending_offline_payment_required = offline_payment_required
+
+                # Direct pricing with validation guardrails (no manual price approval queue)
+                def _clean_price(val):
+                    try:
+                        num = float(val)
+                        return max(0.0, min(num, 50000.0))
+                    except (ValueError, TypeError):
+                        return 0.0
+
+                # Enforce central platform rates when applicable
+                from nutritionist.models import InHousePricingConfig
+                central_cfg = InHousePricingConfig.objects.first()
+                if nutritionist_type == 'inhouse' and central_cfg:
+                    nutri_profile.online_price = central_cfg.online_price
+                    nutri_profile.offline_price = central_cfg.offline_price
+                elif nutritionist_type == 'expert' and central_cfg and getattr(central_cfg, 'expert_fixed_pricing_enabled', False):
+                    nutri_profile.online_price = central_cfg.expert_online_price
+                    nutri_profile.offline_price = central_cfg.expert_offline_price
+                else:
+                    nutri_profile.online_price = _clean_price(online_price)
+                    nutri_profile.offline_price = _clean_price(offline_price)
+                nutri_profile.pending_online_price = None
+                nutri_profile.pending_offline_price = None
+                nutri_profile.price_approval_status = "approved"
+                nutri_profile.price_rejection_reason = None
+
                 try:
-                    num = float(val)
-                    return max(0.0, min(num, 50000.0))
-                except (ValueError, TypeError):
-                    return 0.0
+                    nutri_profile.save()
+                except Exception as exc:
+                    logger.exception("Failed saving NutritionistProfile / uploading documents for %s", email)
+                    raise serializers.ValidationError({
+                        "error": "Failed to upload one or more verification documents. Please check file format/size (max 10 MB) and try again."
+                    }) from exc
 
-            # Enforce central platform rates when applicable
-            from nutritionist.models import InHousePricingConfig
-            central_cfg = InHousePricingConfig.objects.first()
-            if nutritionist_type == 'inhouse' and central_cfg:
-                nutri_profile.online_price = central_cfg.online_price
-                nutri_profile.offline_price = central_cfg.offline_price
-            elif nutritionist_type == 'expert' and central_cfg and getattr(central_cfg, 'expert_fixed_pricing_enabled', False):
-                nutri_profile.online_price = central_cfg.expert_online_price
-                nutri_profile.offline_price = central_cfg.expert_offline_price
-            else:
-                nutri_profile.online_price = _clean_price(online_price)
-                nutri_profile.offline_price = _clean_price(offline_price)
-            nutri_profile.pending_online_price = None
-            nutri_profile.pending_offline_price = None
-            nutri_profile.price_approval_status = "approved"
-            nutri_profile.price_rejection_reason = None
-
-            nutri_profile.save()
+        cache.delete(f"verification_token_{email}")
 
         from subscriptions.models import Payment, Plan
         from subscriptions.services import activate_plan_for_user

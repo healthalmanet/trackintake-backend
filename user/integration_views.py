@@ -55,6 +55,14 @@ class IntegrationRegisterView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        from .blocking import is_contact_blocked
+        blocked, block_msg = is_contact_blocked(
+            email=email,
+            phone_number=request.data.get("mobile_number") or request.data.get("phone_number"),
+        )
+        if blocked:
+            return Response({"error": block_msg}, status=status.HTTP_403_FORBIDDEN)
+
         user_exists = User.objects.filter(email=email).exists()
 
         try:

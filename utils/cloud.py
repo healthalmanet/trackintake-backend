@@ -8,8 +8,8 @@ class CustomCloudinaryStorage(MediaCloudinaryStorage):
     """
 
     def _get_resource_type(self, name):
-        ext = os.path.splitext(name)[1].lower()
-        raw_extensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.txt']
+        ext = os.path.splitext(str(name or ""))[1].lower()
+        raw_extensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.txt', '.rtf', '.odt']
         if ext in raw_extensions:
             return 'raw'
         return 'image'

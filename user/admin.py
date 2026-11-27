@@ -236,7 +236,7 @@ class CustomUserChangeForm(forms.ModelForm):
 
     class Meta:
         model = User
-        fields = ("email", "full_name", "role", "is_active", "is_admin")
+        fields = ("email", "full_name", "role", "is_active", "is_blocked", "blocked_reason", "is_admin")
 
 # ------------------------------
 # Custom User Admin Configuration
@@ -245,8 +245,9 @@ class CustomUserAdmin(BaseUserAdmin):
     form = CustomUserChangeForm
     add_form = CustomUserCreationForm
 
-    list_display = ("email", "full_name", "phone_number", "role", "date_joined", "is_active", "is_admin")
-    list_filter = ("role", "is_admin", "date_joined")
+    list_display = ("email", "full_name", "phone_number", "role", "date_joined", "is_active", "is_blocked", "is_admin")
+    list_filter = ("role", "is_active", "is_blocked", "is_admin", "date_joined")
+    actions = ["block_selected_users", "unblock_selected_users"]
 
     fieldsets = (
         (None, {"fields": ("email", "password")}),
@@ -260,6 +261,7 @@ class CustomUserAdmin(BaseUserAdmin):
                 "user_permissions"      # ✅ Allow assigning specific permissions
             )
         }),
+        ("Blocking", {"fields": ("is_blocked", "blocked_reason", "blocked_at")}),
         ("Important Dates", {"fields": ("date_joined", "last_login")}),
     )
 
@@ -273,7 +275,25 @@ class CustomUserAdmin(BaseUserAdmin):
     search_fields = ("email", "full_name", "phone_number")
     ordering = ("-date_joined",)
     filter_horizontal = ("groups", "user_permissions")  # ✅ Nice multi-select UI
-    readonly_fields = ('date_joined', 'last_login')
+    readonly_fields = ('date_joined', 'last_login', 'blocked_at')
+
+    @admin.action(description="Block selected users (prevent login and re-registration)")
+    def block_selected_users(self, request, queryset):
+        from .blocking import block_user
+        count = 0
+        for user in queryset:
+            block_user(user, reason=user.blocked_reason or "Blocked by administrator")
+            count += 1
+        self.message_user(request, f"Blocked {count} user(s) and recorded their email/mobile number.")
+
+    @admin.action(description="Unblock selected users")
+    def unblock_selected_users(self, request, queryset):
+        from .blocking import unblock_user
+        count = 0
+        for user in queryset:
+            unblock_user(user)
+            count += 1
+        self.message_user(request, f"Unblocked {count} user(s).")
 
     def get_search_results(self, request, queryset, search_term):
         """
@@ -358,3 +378,13 @@ admin.site.register(Blog)
 admin.site.register(Message)
 admin.site.register(WeightLog)
 admin.site.register(WaterIntakeLog)
+
+from .models import BlockedContact
+
+
+@admin.register(BlockedContact)
+class BlockedContactAdmin(admin.ModelAdmin):
+    list_display = ("email", "canonical_email", "phone_number", "phone_last10", "is_active", "reason", "created_at")
+    list_filter = ("is_active", "created_at")
+    search_fields = ("email", "canonical_email", "phone_number", "phone_last10", "reason")
+    readonly_fields = ("canonical_email", "phone_last10", "created_at", "updated_at")

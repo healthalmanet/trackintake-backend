@@ -62,6 +62,16 @@ class SendOTPView(views.APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email'].strip().lower()
 
+        phone_number = request.data.get("phone_number")
+        if phone_number:
+            from .blocking import is_contact_blocked
+            blocked, block_msg = is_contact_blocked(phone_number=phone_number)
+            if blocked:
+                return Response(
+                    {"phone_number": [block_msg], "error": block_msg},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         otp = f"{random.randint(100000, 999999)}"
         expires_at = timezone.now() + timedelta(minutes=10)
 
@@ -229,29 +239,31 @@ class RegisterView(views.APIView):
         print(f"✅ [RENDER REGISTRATION TOKEN VERIFIED] Email: {email}", flush=True)
 
         # ── Step 2: Validate & create user via RegisterSerializer ─────────────
+        from django.db import transaction
         serializer = RegisterSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        user = serializer.save()
+        with transaction.atomic():
+            user = serializer.save()
 
-        # Clear the verification token and OTP cache + DB after successful registration
+            # ── Step 3: Link payment & activate plan if payment exists ──────────
+            if payment and payment.user is None:
+                payment.user = user
+                if razorpay_payment_id:
+                    payment.razorpay_payment_id = razorpay_payment_id
+                payment.status = "success"
+                payment.save()
+
+                from subscriptions.models import UserSubscription
+                already_active = UserSubscription.objects.filter(user=user, is_active=True).exists()
+                if not already_active:
+                    activate_plan_for_user(user=user, plan=payment.plan)
+
+        # Clear the verification token and OTP cache + DB after atomic commit
         cache.delete(f"verification_token_{email}")
         cache.delete(f"otp_{email}")
         EmailOTP.objects.filter(email=email).delete()
-
-        # ── Step 3: Link payment & activate plan if payment exists ──────────
-        if payment and payment.user is None:
-            payment.user = user
-            if razorpay_payment_id:
-                payment.razorpay_payment_id = razorpay_payment_id
-            payment.status = "success"
-            payment.save()
-
-            from subscriptions.models import UserSubscription
-            already_active = UserSubscription.objects.filter(user=user, is_active=True).exists()
-            if not already_active:
-                activate_plan_for_user(user=user, plan=payment.plan)
 
         from user.serializers import sanitize_json_string_list
 
@@ -313,6 +325,12 @@ class CustomSocialLoginView(SocialLoginView):
         This method is overridden to create a custom response format.
         It's called after the user is successfully logged in.
         """
+        from .blocking import format_blocked_message, is_contact_blocked
+        blocked, block_msg = is_contact_blocked(email=getattr(self.user, "email", None))
+        if getattr(self.user, "is_blocked", False) or not getattr(self.user, "is_active", True) or blocked:
+            msg = block_msg or format_blocked_message(getattr(self.user, "blocked_reason", ""))
+            return Response({"detail": msg, "error": msg}, status=status.HTTP_403_FORBIDDEN)
+
         # self.user will contain the authenticated user instance.
         
         # 1. Generate the JWT tokens for the user.

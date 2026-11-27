@@ -70,6 +70,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     phone_number = models.CharField(max_length=20, blank=True, null=True)
     date_joined = models.DateTimeField(default=timezone.now)
     is_active = models.BooleanField(default=True)
+    is_blocked = models.BooleanField(default=False)
+    blocked_reason = models.TextField(blank=True, null=True)
+    blocked_at = models.DateTimeField(blank=True, null=True)
     is_admin = models.BooleanField(default=False)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="user")
 
@@ -144,3 +147,63 @@ class EmailOTP(models.Model):
 
     def __str__(self):
         return f"{self.email} - {self.otp} (verified={self.is_verified})"
+
+
+# ---------------------- Blocked Contact Registry ----------------------
+class BlockedContact(models.Model):
+    """
+    Persistent registry of blocked emails (including canonicalized Gmail addresses)
+    and mobile/phone numbers so blocked users cannot re-register under any variation.
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="block_records",
+    )
+    email = models.EmailField(blank=True, null=True, db_index=True)
+    canonical_email = models.CharField(max_length=255, blank=True, null=True, db_index=True)
+    phone_number = models.CharField(max_length=32, blank=True, null=True, db_index=True)
+    phone_last10 = models.CharField(max_length=10, blank=True, null=True, db_index=True)
+    reason = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Blocked Contact"
+        verbose_name_plural = "Blocked Contacts"
+        indexes = [
+            models.Index(fields=["is_active", "email"]),
+            models.Index(fields=["is_active", "canonical_email"]),
+            models.Index(fields=["is_active", "phone_number"]),
+            models.Index(fields=["is_active", "phone_last10"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        from .blocking import canonicalize_email, normalize_email, normalize_phone
+
+        if self.email:
+            self.email = normalize_email(self.email)
+            self.canonical_email = canonicalize_email(self.email)
+        else:
+            self.email = None
+            if self.canonical_email:
+                self.canonical_email = canonicalize_email(self.canonical_email)
+
+        if self.phone_number:
+            digits, last10 = normalize_phone(self.phone_number)
+            self.phone_number = digits or None
+            self.phone_last10 = last10 or None
+        else:
+            self.phone_number = None
+            self.phone_last10 = None
+
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        parts = [p for p in [self.email, self.phone_number] if p]
+        target = " / ".join(parts) if parts else f"Record #{self.pk}"
+        status_label = "ACTIVE" if self.is_active else "INACTIVE"
+        return f"{target} [{status_label}]"
