@@ -638,13 +638,9 @@ class targetNutrientsUpdate(APIView):
         except ValueError:
             return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
 
-        start_of_day = datetime.combine(start_date, time.min)
-        end_of_day = datetime.combine(end_date, time.max)
-
         meals_in_range = UserMeal.objects.filter(
             user=request.user,
-            consumed_at__gte=start_of_day,
-            consumed_at__lte=end_of_day
+            date__range=(start_date, end_date)
         )
 
         totals = meals_in_range.aggregate(

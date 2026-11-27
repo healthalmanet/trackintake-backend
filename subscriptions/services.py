@@ -80,11 +80,15 @@ def consume_consultation(user, consult_type: str):
         raise PermissionDenied("Subscription expired.")
 
     if consult_type == "expert":
+        if subscription.plan.expert_consults == 0 and subscription.plan.appointment_allowed:
+            return subscription  # 0 = Unlimited consultations
         if subscription.remaining_expert <= 0:
             raise PermissionDenied("No expert consultations left.")
         subscription.remaining_expert -= 1
 
     elif consult_type == "inhouse":
+        if subscription.plan.inhouse_consults == 0 and subscription.plan.appointment_allowed:
+            return subscription  # 0 = Unlimited consultations
         if subscription.remaining_inhouse <= 0:
             raise PermissionDenied("No in-house consultations left.")
         subscription.remaining_inhouse -= 1

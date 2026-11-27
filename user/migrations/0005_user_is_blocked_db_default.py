@@ -13,3 +13,4 @@ class Migration(migrations.Migration):
             reverse_sql="ALTER TABLE user_user ALTER COLUMN is_blocked DROP DEFAULT;",
         ),
     ]
+
